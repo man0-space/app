@@ -148,3 +148,24 @@ export type Policy = {
 };
 
 export type Consent = { id: string; policy: string; accepted: string };
+
+export type Thread = {
+  threadId: string;
+  workflowId: string;
+  userAddress: string;
+  title: string;
+  status: 'running' | 'input_required' | 'connector_required' | 'succeeded' | 'failed';
+  runId: string;
+  dry: boolean;
+  prompt: string;
+  attachments: Array<Record<string, unknown>>;
+  coordinator?: Coordinator | null;
+  runningStepId?: string | null;
+  stepOutputs: Record<string, string>;
+  missingInputs: Array<Record<string, unknown>>;
+  missingConnectors: Array<Record<string, unknown>>;
+  error?: string | null;
+  execution?: Record<string, unknown> | null;
+  created: string;
+  updated: string;
+};
