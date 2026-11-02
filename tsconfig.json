@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "types": [
+      "vite/client",
+      "node"
+    ]
+  },
+  "include": [
+    "src",
+    "tests/graph.test.ts",
+    "tests/routes.test.ts",
+    "tests/contracts.test.ts",
+    "tests/catalog.test.ts",
+    "tests/analytics.test.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/**/*_verification.ts"
+  ]
+}
