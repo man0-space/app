@@ -86,3 +86,65 @@ export const labels: Record<Kind, string> = {
   connector: 'Connectors',
   agent: 'Agents',
 };
+export const spacing: Point = { x: 360, y: 220 };
+
+export type SocialLink = {
+  platform: SocialPlatform;
+  handle: string;
+  url: string;
+  verified?: boolean;
+  providerId?: string;
+};
+
+export type Terms = {
+  creatorFee: number;
+  tasks: string[];
+  description: string;
+  cid?: string;
+  chainWorkflowId?: number;
+  txHash?: string;
+  contractId?: string;
+};
+
+export type Profile = {
+  name: string;
+  bio: string;
+  image?: string | null;
+  banner?: string | null;
+  socials?: SocialLink[];
+};
+
+export type CreatorWallets = {
+  near: string;
+  evm: string | null;
+  svm: string | null;
+};
+
+export type CreatorProfile = {
+  userAddress: string;
+  name: string;
+  bio: string;
+  image: string | null;
+  banner: string | null;
+  socials: SocialLink[];
+  wallets?: CreatorWallets;
+};
+
+export type User = CreatorProfile & { consented: boolean };
+
+export type Listing = Flow & {
+  userAddress: string;
+  creatorName?: string;
+  creatorAvatar?: string | null;
+  terms: Terms | null;
+  published: string | null;
+};
+
+export type Policy = {
+  updated?: string;
+  title: string;
+  sections: { title: string; text: string }[];
+  checks: { terms: string; privacy: string };
+};
+
+export type Consent = { id: string; policy: string; accepted: string };
