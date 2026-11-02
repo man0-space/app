@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Man0 app icon</title>
+  <desc id="desc">The Man0 colony symbol on the app’s near-black background.</desc>
+  <rect width="256" height="256" rx="52" fill="#020305"/>
+  <g transform="scale(4)">
+  <g fill="none" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 28V37C20 43 12 43 12 49V54" stroke="#38bdf8"/>
+    <path d="M32 28V56" stroke="#10b981"/>
+    <path d="M44 28V37C44 43 52 43 52 49V54" stroke="#ff2e63"/>
+  </g>
+  <path d="M10 29C12 18 23 8 38 8L34 17C43 17 51 21 55 29H10Z" fill="#38bdf8"/>
+  </g>
+</svg>
