@@ -394,3 +394,72 @@ export function update(flow: Flow, id: string, patch: Partial<Step>): Flow {
     modified: new Date().toISOString(),
   };
 }
+
+export const COMPACT_CANVAS_MAX_WIDTH = 768;
+
+const NODE_CARD_W = 228;
+const NODE_CARD_H = 88;
+const SERPENTINE_COL_PITCH = 288;
+const SERPENTINE_PARALLEL_Y = 124;
+const SERPENTINE_BAND_GAP = 76;
+const VERTICAL_ROW_PITCH = 144;
+const VERTICAL_PARALLEL_X = 264;
+
+export interface CanvasViewportBox {
+  width?: number;
+  height?: number;
+  topReserve?: number;
+  bottomReserve?: number;
+  horizontalReserve?: number;
+}
+
+export interface AdaptiveLayoutResult {
+  nodes: Block[];
+  edges: Link[];
+  mode: 'vertical' | 'serpentine';
+  columnsPerBand: number;
+}
+
+export function isCompactCanvasViewport(width?: number): boolean {
+  if (typeof width === 'number' && Number.isFinite(width) && width > 0) {
+    return width <= COMPACT_CANVAS_MAX_WIDTH;
+  }
+  return typeof window !== 'undefined' ? window.innerWidth <= COMPACT_CANVAS_MAX_WIDTH : false;
+}
+
+export function getAdaptiveFitViewOptions(viewport?: CanvasViewportBox): {
+  padding:
+    | number
+    | {
+        top: `${number}px`;
+        right: `${number}px`;
+        bottom: `${number}px`;
+        left: `${number}px`;
+      };
+  maxZoom: number;
+  minZoom: number;
+} {
+  const compact = isCompactCanvasViewport(viewport?.width);
+  const maxZoom = compact ? 0.92 : 1;
+  const minZoom = 0.24;
+  if (viewport?.bottomReserve || viewport?.topReserve) {
+    const top = Math.max(48, Math.round(viewport.topReserve ?? (compact ? 64 : 74)));
+    const bottom = Math.max(64, Math.round(viewport.bottomReserve ?? (compact ? 196 : 224)));
+    const side = Math.max(16, Math.round((viewport.horizontalReserve ?? (compact ? 32 : 72)) / 2));
+    return {
+      padding: {
+        top: `${top}px` as `${number}px`,
+        right: `${side}px` as `${number}px`,
+        bottom: `${bottom}px` as `${number}px`,
+        left: `${side}px` as `${number}px`,
+      },
+      maxZoom,
+      minZoom,
+    };
+  }
+  return {
+    padding: compact ? 0.18 : 0.24,
+    maxZoom,
+    minZoom,
+  };
+}
