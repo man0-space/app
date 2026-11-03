@@ -345,3 +345,52 @@ export function insertDirectionalStep(
     },
   };
 }
+
+export function connect(flow: Flow, source: string, target: string): Flow {
+  if (source === target) throw new Error('A step cannot connect to itself.');
+  if (!flow.nodes.some((n) => n.id === source) || !flow.nodes.some((n) => n.id === target)) {
+    throw new Error('Both steps must exist.');
+  }
+  if (flow.edges.some((e) => e.source === source && e.target === target)) {
+    throw new Error('These steps are already connected.');
+  }
+  const pending = [target];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (id === source) throw new Error('This connection would create a cycle.');
+    if (visited.has(id)) continue;
+    visited.add(id);
+    pending.push(...flow.edges.filter((e) => e.source === id).map((e) => e.target));
+  }
+  return {
+    ...flow,
+    edges: [...flow.edges, wire(source, target)],
+    modified: new Date().toISOString(),
+  };
+}
+
+export function remove(flow: Flow, id: string): Flow {
+  return {
+    ...flow,
+    nodes: flow.nodes.filter((n) => n.id !== id),
+    edges: flow.edges.filter((e) => e.source !== id && e.target !== id),
+    modified: new Date().toISOString(),
+  };
+}
+
+export function setCoordinator(flow: Flow, coordinator: Coordinator | null): Flow {
+  return {
+    ...flow,
+    coordinator,
+    modified: new Date().toISOString(),
+  };
+}
+
+export function update(flow: Flow, id: string, patch: Partial<Step>): Flow {
+  return {
+    ...flow,
+    nodes: flow.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)),
+    modified: new Date().toISOString(),
+  };
+}
