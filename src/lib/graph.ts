@@ -552,3 +552,110 @@ export function computeSafeCanvasViewport(
     zoom: Number(zoom.toFixed(4)),
   };
 }
+
+function decomposeOrderedWaves(
+  nodes: readonly Block[],
+  edges: readonly Link[],
+): string[][] {
+  if (nodes.length === 0) return [];
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const originalOrder = new Map(nodes.map((n, idx) => [n.id, idx]));
+  const inDegree = new Map<string, number>(nodes.map((n) => [n.id, 0]));
+  const outgoing = new Map<string, string[]>(nodes.map((n) => [n.id, []]));
+  const incoming = new Map<string, string[]>(nodes.map((n) => [n.id, []]));
+
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edge.source === edge.target) {
+      continue;
+    }
+    outgoing.get(edge.source)!.push(edge.target);
+    incoming.get(edge.target)!.push(edge.source);
+    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+  }
+
+  const rank = new Map<string, number>();
+  const queue = nodes.filter((n) => (inDegree.get(n.id) ?? 0) === 0).map((n) => n.id);
+  for (const id of queue) rank.set(id, 0);
+
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    visited.add(id);
+    const currentRank = rank.get(id) ?? 0;
+    for (const next of outgoing.get(id) ?? []) {
+      rank.set(next, Math.max(rank.get(next) ?? 0, currentRank + 1));
+      const nextDeg = (inDegree.get(next) ?? 1) - 1;
+      inDegree.set(next, nextDeg);
+      if (nextDeg === 0) queue.push(next);
+    }
+  }
+
+  // Fallback for any residual nodes
+  let fallbackRank = rank.size > 0 ? Math.max(...rank.values()) + 1 : 0;
+  for (const node of nodes) {
+    if (!visited.has(node.id) && !rank.has(node.id)) {
+      rank.set(node.id, fallbackRank);
+      fallbackRank += 1;
+    }
+  }
+
+  const waveMap = new Map<number, string[]>();
+  for (const node of nodes) {
+    const r = rank.get(node.id) ?? 0;
+    const list = waveMap.get(r) ?? [];
+    list.push(node.id);
+    waveMap.set(r, list);
+  }
+
+  const sortedRanks = Array.from(waveMap.keys()).sort((a, b) => a - b);
+  const waves = sortedRanks.map((r) => waveMap.get(r)!);
+
+  // Two-pass barycenter sweep to minimize parallel branch edge crossings
+  const slotOf = new Map<string, number>();
+  waves.forEach((wave) => {
+    wave.sort((a, b) => (originalOrder.get(a) ?? 0) - (originalOrder.get(b) ?? 0));
+    wave.forEach((id, idx) => slotOf.set(id, idx));
+  });
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let w = 1; w < waves.length; w += 1) {
+      const wave = waves[w]!;
+      wave.sort((a, b) => {
+        const parentsA = incoming.get(a) ?? [];
+        const parentsB = incoming.get(b) ?? [];
+        const baryA =
+          parentsA.length > 0
+            ? parentsA.reduce((acc, p) => acc + (slotOf.get(p) ?? 0), 0) / parentsA.length
+            : (slotOf.get(a) ?? 0);
+        const baryB =
+          parentsB.length > 0
+            ? parentsB.reduce((acc, p) => acc + (slotOf.get(p) ?? 0), 0) / parentsB.length
+            : (slotOf.get(b) ?? 0);
+        if (Math.abs(baryA - baryB) > 0.001) return baryA - baryB;
+        return (originalOrder.get(a) ?? 0) - (originalOrder.get(b) ?? 0);
+      });
+      wave.forEach((id, idx) => slotOf.set(id, idx));
+    }
+
+    for (let w = waves.length - 2; w >= 0; w -= 1) {
+      const wave = waves[w]!;
+      wave.sort((a, b) => {
+        const childrenA = outgoing.get(a) ?? [];
+        const childrenB = outgoing.get(b) ?? [];
+        const baryA =
+          childrenA.length > 0
+            ? childrenA.reduce((acc, c) => acc + (slotOf.get(c) ?? 0), 0) / childrenA.length
+            : (slotOf.get(a) ?? 0);
+        const baryB =
+          childrenB.length > 0
+            ? childrenB.reduce((acc, c) => acc + (slotOf.get(c) ?? 0), 0) / childrenB.length
+            : (slotOf.get(b) ?? 0);
+        if (Math.abs(baryA - baryB) > 0.001) return baryA - baryB;
+        return (originalOrder.get(a) ?? 0) - (originalOrder.get(b) ?? 0);
+      });
+      wave.forEach((id, idx) => slotOf.set(id, idx));
+    }
+  }
+
+  return waves;
+}
