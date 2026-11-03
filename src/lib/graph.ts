@@ -659,3 +659,126 @@ function decomposeOrderedWaves(
 
   return waves;
 }
+
+export function assignSmartEdgeHandles(
+  nodes: readonly Block[],
+  edges: readonly Link[],
+): Link[] {
+  if (edges.length === 0) return [];
+  const posById = new Map<string, Point>(nodes.map((n) => [n.id, n.position]));
+
+  return edges.map((edge) => {
+    const src = posById.get(edge.source);
+    const dst = posById.get(edge.target);
+    if (!src || !dst) return edge;
+
+    const dx = dst.x - src.x;
+    const dy = dst.y - src.y;
+
+    let sourceHandle = 'out';
+    let targetHandle = 'in';
+
+    if (dy > NODE_CARD_H * 0.65 && Math.abs(dx) < SERPENTINE_COL_PITCH * 0.62) {
+      sourceHandle = 'out-bottom';
+      targetHandle = 'in-top';
+    } else if (dy < -NODE_CARD_H * 0.65 && Math.abs(dx) < SERPENTINE_COL_PITCH * 0.62) {
+      sourceHandle = 'out-top';
+      targetHandle = 'in-bottom';
+    } else if (dx < -44) {
+      sourceHandle = 'out-left';
+      targetHandle = 'in-right';
+    } else {
+      sourceHandle = 'out';
+      targetHandle = 'in';
+    }
+
+    if (edge.sourceHandle === sourceHandle && edge.targetHandle === targetHandle) {
+      return edge;
+    }
+    return {
+      ...edge,
+      sourceHandle,
+      targetHandle,
+    };
+  });
+}
+
+function handleToDirection(
+  handleId: string | null | undefined,
+  role: 'source' | 'target',
+): Direction {
+  switch (handleId) {
+    case 'in':
+    case 'out-left':
+      return 'left';
+    case 'out':
+    case 'in-right':
+      return 'right';
+    case 'in-top':
+    case 'out-top':
+      return 'up';
+    case 'in-bottom':
+    case 'out-bottom':
+      return 'down';
+    default:
+      return role === 'source' ? 'right' : 'left';
+  }
+}
+
+export function collectConnectedDirectionsByNodeId(
+  nodes: readonly Block[],
+  edges: readonly Link[],
+): Map<string, Direction[]> {
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const sets = new Map<string, Set<Direction>>();
+  for (const node of nodes) {
+    sets.set(node.id, new Set<Direction>());
+  }
+  const resolved = assignSmartEdgeHandles(nodes, edges);
+  for (const edge of resolved) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edge.source === edge.target) {
+      continue;
+    }
+    sets.get(edge.source)?.add(handleToDirection(edge.sourceHandle, 'source'));
+    sets.get(edge.target)?.add(handleToDirection(edge.targetHandle, 'target'));
+  }
+  const order: readonly Direction[] = ['up', 'down', 'left', 'right'];
+  const out = new Map<string, Direction[]>();
+  for (const [nodeId, set] of sets.entries()) {
+    out.set(
+      nodeId,
+      order.filter((dir) => set.has(dir)),
+    );
+  }
+  return out;
+}
+
+export function collectActiveHandlesByNodeId(
+  nodes: readonly Block[],
+  edges: readonly Link[],
+  options?: { includeHorizontalDefaults?: boolean },
+): Map<string, string[]> {
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const sets = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    const base = new Set<string>();
+    if (options?.includeHorizontalDefaults) {
+      base.add('in');
+      base.add('out');
+    }
+    sets.set(node.id, base);
+  }
+  const resolved = assignSmartEdgeHandles(nodes, edges);
+  for (const edge of resolved) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edge.source === edge.target) {
+      continue;
+    }
+    sets.get(edge.source)?.add(edge.sourceHandle || 'out');
+    sets.get(edge.target)?.add(edge.targetHandle || 'in');
+  }
+  const out = new Map<string, string[]>();
+  for (const [nodeId, set] of sets.entries()) {
+    out.set(nodeId, Array.from(set).sort());
+  }
+  return out;
+}
