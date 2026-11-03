@@ -463,3 +463,92 @@ export function getAdaptiveFitViewOptions(viewport?: CanvasViewportBox): {
     minZoom,
   };
 }
+
+export interface SafeCanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export function computeSafeCanvasViewport(
+  nodes: readonly Block[],
+  viewport?: CanvasViewportBox,
+  measuredById?: ReadonlyMap<string, { width: number; height: number }>,
+): SafeCanvasViewport {
+  const rawW =
+    viewport?.width && Number.isFinite(viewport.width) && viewport.width > 0
+      ? viewport.width
+      : typeof window !== 'undefined'
+        ? window.innerWidth
+        : 1200;
+  const rawH =
+    viewport?.height && Number.isFinite(viewport.height) && viewport.height > 0
+      ? viewport.height
+      : typeof window !== 'undefined'
+        ? window.innerHeight
+        : 760;
+
+  const compact = isCompactCanvasViewport(rawW);
+  const maxZoom = compact ? 0.92 : 1;
+  const minZoom = 0.24;
+
+  const topPad = Math.max(48, Math.round(viewport?.topReserve ?? (compact ? 64 : 74)));
+  const bottomPad = Math.max(64, Math.round(viewport?.bottomReserve ?? (compact ? 210 : 236)));
+  const sidePad = Math.max(16, Math.round((viewport?.horizontalReserve ?? (compact ? 32 : 72)) / 2));
+
+  const safeX = sidePad;
+  const safeY = topPad;
+  const safeW = Math.max(96, rawW - sidePad * 2);
+  const safeH = Math.max(96, rawH - topPad - bottomPad);
+
+  if (nodes.length === 0) {
+    return {
+      x: Math.round(safeX),
+      y: Math.round(safeY),
+      zoom: maxZoom,
+    };
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const node of nodes) {
+    const dims = measuredById?.get(node.id);
+    const w = dims && dims.width > 0 ? dims.width : NODE_CARD_W;
+    const h = dims && dims.height > 0 ? dims.height : NODE_CARD_H;
+    minX = Math.min(minX, node.position.x);
+    minY = Math.min(minY, node.position.y);
+    maxX = Math.max(maxX, node.position.x + w);
+    maxY = Math.max(maxY, node.position.y + h);
+  }
+
+  const innerMarginX = Math.min(compact ? 12 : 22, Math.floor(safeW * 0.1));
+  const innerMarginY = Math.min(compact ? 12 : 18, Math.floor(safeH * 0.1));
+  const fitW = Math.max(64, safeW - innerMarginX * 2);
+  const fitH = Math.max(64, safeH - innerMarginY * 2);
+
+  const boundsW = Math.max(1, maxX - minX);
+  const boundsH = Math.max(1, maxY - minY);
+
+  const rawZoom = Math.min(fitW / boundsW, fitH / boundsH);
+  const zoom = Math.min(maxZoom, Math.max(minZoom, rawZoom));
+
+  const safeCenterX = safeX + safeW / 2;
+  const safeCenterY = safeY + safeH / 2;
+  const boundsCenterX = minX + boundsW / 2;
+  const boundsCenterY = minY + boundsH / 2;
+
+  const x = Math.round(safeCenterX - boundsCenterX * zoom);
+  const y =
+    boundsH * zoom > safeH
+      ? Math.round(safeY + innerMarginY - minY * zoom)
+      : Math.round(safeCenterY - boundsCenterY * zoom);
+
+  return {
+    x,
+    y,
+    zoom: Number(zoom.toFixed(4)),
+  };
+}
