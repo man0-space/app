@@ -782,3 +782,93 @@ export function collectActiveHandlesByNodeId(
   }
   return out;
 }
+
+function buildVerticalPositions(
+  waves: readonly string[][],
+  usableW: number,
+): { positions: Map<string, Point>; width: number; height: number } {
+  const positions = new Map<string, Point>();
+  const maxPerSubRow = Math.max(1, Math.floor((usableW + 24) / VERTICAL_PARALLEL_X));
+  let cursorY = 80;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = cursorY;
+
+  for (const wave of waves) {
+    const subRows: string[][] = [];
+    for (let i = 0; i < wave.length; i += maxPerSubRow) {
+      subRows.push(wave.slice(i, i + maxPerSubRow));
+    }
+    for (const subRow of subRows) {
+      const m = subRow.length;
+      subRow.forEach((id, idx) => {
+        const x = Math.round(120 + (idx - (m - 1) / 2) * VERTICAL_PARALLEL_X);
+        const y = Math.round(cursorY);
+        positions.set(id, { x, y });
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x + NODE_CARD_W);
+        maxY = Math.max(maxY, y + NODE_CARD_H);
+      });
+      cursorY += VERTICAL_ROW_PITCH;
+    }
+  }
+
+  // Normalize minX to 80 for clean positive coordinates
+  if (Number.isFinite(minX) && minX !== 80) {
+    const shiftX = 80 - minX;
+    for (const [id, pt] of positions.entries()) {
+      positions.set(id, { x: pt.x + shiftX, y: pt.y });
+    }
+    maxX += shiftX;
+    minX = 80;
+  }
+
+  return {
+    positions,
+    width: Math.max(NODE_CARD_W, maxX - (Number.isFinite(minX) ? minX : 80)),
+    height: Math.max(NODE_CARD_H, maxY - 80),
+  };
+}
+
+function buildSerpentinePositions(
+  waves: readonly string[][],
+  columnsPerBand: number,
+): { positions: Map<string, Point>; width: number; height: number; bandCount: number } {
+  const positions = new Map<string, Point>();
+  const cols = Math.max(1, columnsPerBand);
+  const bandCount = Math.max(1, Math.ceil(waves.length / cols));
+  let bandTopY = 100;
+  let maxX = 100 + NODE_CARD_W;
+  let maxY = bandTopY + NODE_CARD_H;
+
+  for (let band = 0; band < bandCount; band += 1) {
+    const bandWaves = waves.slice(band * cols, (band + 1) * cols);
+    const maxParallelInBand = Math.max(1, ...bandWaves.map((w) => w.length));
+    const bandSpanH =
+      (maxParallelInBand - 1) * SERPENTINE_PARALLEL_Y + NODE_CARD_H;
+    const reversed = band % 2 === 1;
+
+    bandWaves.forEach((wave, slot) => {
+      const col = reversed ? cols - 1 - slot : slot;
+      const x = Math.round(100 + col * SERPENTINE_COL_PITCH);
+      const waveSpanH = (wave.length - 1) * SERPENTINE_PARALLEL_Y + NODE_CARD_H;
+      const offsetY = Math.round((bandSpanH - waveSpanH) / 2);
+
+      wave.forEach((id, idx) => {
+        const y = Math.round(bandTopY + offsetY + idx * SERPENTINE_PARALLEL_Y);
+        positions.set(id, { x, y });
+        maxX = Math.max(maxX, x + NODE_CARD_W);
+        maxY = Math.max(maxY, y + NODE_CARD_H);
+      });
+    });
+
+    bandTopY += bandSpanH + SERPENTINE_BAND_GAP;
+  }
+
+  return {
+    positions,
+    width: Math.max(NODE_CARD_W, maxX - 100),
+    height: Math.max(NODE_CARD_H, maxY - 100),
+    bandCount,
+  };
+}
