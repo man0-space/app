@@ -96,3 +96,44 @@ export function marketWorkflow(pathname: string): string | null {
 
   return null;
 }
+
+export function parseRoute(pathname: string): Route {
+  if (workflowPageId(pathname) !== null) return 'workflow';
+  const clean = pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+  if (clean === 'my-page' || clean === 'mypage' || clean === 'workspace') return 'mypage';
+  if (clean === 'market' || marketCreator(pathname) !== null) return 'market';
+  return 'studio';
+}
+
+export function routePath(route: Route): string {
+  if (route === 'mypage') return '/workspace';
+  if (route === 'market') return '/market';
+  if (route === 'workflow') return '/market';
+  return '/studio';
+}
+
+export function workflowPath(id: string): string {
+  return `/workflow/${encodeURIComponent(id)}`;
+}
+
+export function marketPath(creator?: string | null, workflowTitle?: string | null): string {
+  const creatorSlug = toUrlSlug(creator);
+  if (!creatorSlug) return '/market';
+  const wfSlug = toUrlSlug(workflowTitle);
+  return wfSlug ? `/${creatorSlug}/${wfSlug}` : `/${creatorSlug}`;
+}
+
+export function navigateTo(pathname: string): void {
+  if (window.location.pathname !== pathname) {
+    window.history.pushState(null, '', pathname);
+  }
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+export function navigateToWorkflow(id: string): void {
+  navigateTo(workflowPath(id));
+}
+
+export function navigateToCreator(creator?: string | null): void {
+  navigateTo(marketPath(creator));
+}
