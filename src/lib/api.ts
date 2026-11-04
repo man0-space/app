@@ -271,3 +271,121 @@ export type Config = {
     platformPercent: number;
   };
 };
+
+export type Auth = {
+  token: string;
+  user: User;
+  expires: string;
+};
+
+let current =
+  typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
+    ? localStorage.getItem('token')
+    : null;
+
+export function token(value: string | null) {
+  current = value;
+  if (value) localStorage.setItem('token', value);
+  else localStorage.removeItem('token');
+}
+
+export function authenticated() {
+  return Boolean(current);
+}
+
+export class Fault extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly missing?: MissingConnectorRequirement[],
+    readonly missingInputs?: MissingInputRequirement[],
+    readonly threadId?: string,
+  ) {
+    super(message);
+  }
+}
+
+export function requireEnv(name: string): string {
+  const viteEnv = (import.meta as { env?: Record<string, string | undefined> }).env;
+  const nodeEnv =
+    typeof globalThis !== 'undefined' && 'process' in globalThis
+      ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+      : undefined;
+  const value = (viteEnv?.[name] ?? nodeEnv?.[name])?.trim();
+  if (!value) {
+    throw new Error(`${name} is required.`);
+  }
+  return value;
+}
+
+const prefix = `${requireEnv('VITE_API_URL').replace(/\/+$/, '')}/api`;
+
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${prefix}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'content-type': 'application/json' } : {}),
+      ...(current ? { authorization: `Bearer ${current}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({ error: 'Request failed.' }))) as {
+      error?: string;
+      code?: string;
+      threadId?: string;
+      missing?: MissingConnectorRequirement[];
+      missingInputs?: MissingInputRequirement[];
+    };
+    throw new Fault(
+      payload.error || 'Request failed.',
+      response.status,
+      payload.code,
+      payload.missing,
+      payload.missingInputs,
+      payload.threadId,
+    );
+  }
+  return response.status === 204 ? (undefined as T) : response.json();
+}
+
+async function readNdjson<E>(
+  response: Response,
+  onEvent: (event: E) => void,
+): Promise<void> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx = buffer.indexOf('\n');
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (line) {
+        try {
+          onEvent(JSON.parse(line) as E);
+        } catch {
+          // Ignore malformed keepalive lines
+        }
+      }
+      idx = buffer.indexOf('\n');
+    }
+  }
+  const trailing = buffer.trim();
+  if (trailing) {
+    try {
+      onEvent(JSON.parse(trailing) as E);
+    } catch {
+      // Ignore trailing fragment
+    }
+  }
+}
+
+const body = (value: unknown) => JSON.stringify(value);
+const condition = (modified?: string): Record<string, string> =>
+  modified ? { 'if-match': modified } : {};
