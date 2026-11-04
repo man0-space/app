@@ -872,3 +872,133 @@ function buildSerpentinePositions(
     bandCount,
   };
 }
+
+export function computeAdaptiveWorkflowLayout(
+  nodes: readonly Block[],
+  edges: readonly Link[],
+  viewport?: CanvasViewportBox,
+): AdaptiveLayoutResult {
+  if (nodes.length === 0) {
+    return { nodes: [], edges: [...edges], mode: 'serpentine', columnsPerBand: 1 };
+  }
+
+  const rawW =
+    viewport?.width && Number.isFinite(viewport.width) && viewport.width > 0
+      ? viewport.width
+      : typeof window !== 'undefined'
+        ? window.innerWidth
+        : 1200;
+  const rawH =
+    viewport?.height && Number.isFinite(viewport.height) && viewport.height > 0
+      ? viewport.height
+      : typeof window !== 'undefined'
+        ? window.innerHeight
+        : 760;
+
+  const compact = isCompactCanvasViewport(rawW);
+  const usableW = Math.max(
+    240,
+    rawW - (viewport?.horizontalReserve ?? (compact ? 40 : 96)),
+  );
+  const usableH = Math.max(
+    220,
+    rawH -
+      (viewport?.topReserve ?? (compact ? 68 : 80)) -
+      (viewport?.bottomReserve ?? (compact ? 190 : 140)),
+  );
+  const maxZoom = compact ? 0.92 : 1;
+
+  const waves = decomposeOrderedWaves(nodes, edges);
+
+  if (waves.length === 1 && waves[0]!.length === 1) {
+    const singleNodes = nodes.map((n) => ({
+      ...n,
+      position: { x: 100, y: 100 },
+    }));
+    return {
+      nodes: singleNodes,
+      edges: assignSmartEdgeHandles(singleNodes, edges),
+      mode: compact || usableW < usableH ? 'vertical' : 'serpentine',
+      columnsPerBand: 1,
+    };
+  }
+
+  const isPortraitContainer = compact || usableW / usableH < 0.92;
+  const containerAspect = usableW / usableH;
+
+  let bestPositions: Map<string, Point> | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestMode: 'vertical' | 'serpentine' = isPortraitContainer ? 'vertical' : 'serpentine';
+  let bestCols = waves.length;
+
+  // Evaluate Vertical (Top -> Bottom) candidate
+  const verticalCandidate = buildVerticalPositions(waves, usableW);
+  {
+    const scale = Math.min(
+      maxZoom,
+      usableW / verticalCandidate.width,
+      usableH / verticalCandidate.height,
+    );
+    const graphAspect = verticalCandidate.width / verticalCandidate.height;
+    const aspectRatioMatch =
+      Math.min(containerAspect, graphAspect) / Math.max(containerAspect, graphAspect);
+    const orientationBonus = isPortraitContainer ? 1.18 : 0.86;
+    const score = scale * (0.78 + 0.22 * aspectRatioMatch) * orientationBonus;
+    bestScore = score;
+    bestPositions = verticalCandidate.positions;
+    bestMode = 'vertical';
+    bestCols = 1;
+  }
+
+  // Evaluate Landscape Boustrophedon Serpentine candidates across all column widths C in [2..L]
+  if (!compact || usableW > usableH * 1.15) {
+    const maxCols = Math.max(2, waves.length);
+    for (let cols = 2; cols <= maxCols; cols += 1) {
+      const candidate = buildSerpentinePositions(waves, cols);
+      const scale = Math.min(
+        maxZoom,
+        usableW / candidate.width,
+        usableH / candidate.height,
+      );
+      const graphAspect = candidate.width / candidate.height;
+      const aspectRatioMatch =
+        Math.min(containerAspect, graphAspect) / Math.max(containerAspect, graphAspect);
+      const wrapCount = Math.max(0, candidate.bandCount - 1);
+      // Mild tie-breaker prefers fewer wraps when zoom scale is already crisp
+      const wrapFactor = Math.pow(0.975, wrapCount);
+      const orientationBonus = isPortraitContainer ? 0.88 : 1.08;
+      const score = scale * (0.8 + 0.2 * aspectRatioMatch) * wrapFactor * orientationBonus;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestPositions = candidate.positions;
+        bestMode = 'serpentine';
+        bestCols = cols;
+      }
+    }
+  }
+
+  const nextNodes = nodes.map((node) => ({
+    ...node,
+    position: bestPositions?.get(node.id) ?? node.position,
+  }));
+  const nextEdges = assignSmartEdgeHandles(nextNodes, edges);
+
+  return {
+    nodes: nextNodes,
+    edges: nextEdges,
+    mode: bestMode,
+    columnsPerBand: bestCols,
+  };
+}
+
+export function layout(flow: Flow, viewport?: CanvasViewportBox): Flow {
+  if (!flow.nodes.length) return flow;
+  const arranged = computeAdaptiveWorkflowLayout(flow.nodes, flow.edges, viewport);
+  return {
+    ...flow,
+    nodes: arranged.nodes,
+    edges: arranged.edges,
+    modified: new Date().toISOString(),
+  };
+}
