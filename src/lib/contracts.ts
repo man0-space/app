@@ -112,3 +112,77 @@ export function shortenInlineAddresses(text: string): string {
     .map((part) => (part.trim() ? shortenAddressToken(part) : part))
     .join('');
 }
+
+export interface Mint {
+  workflowId: number;
+  txHash: string;
+  signerId: string;
+  network: Chain;
+  contractId: string;
+}
+
+export async function callNearContract(params: {
+  contractId: string;
+  methodName: string;
+  args?: Record<string, unknown>;
+  deposit?: string;
+  gas?: number;
+}): Promise<Execute> {
+  return api.nearExecute(params);
+}
+
+function parseMintedWorkflowId(response: Execute): number {
+  if (typeof response.result === 'number' && Number.isInteger(response.result) && response.result > 0) {
+    return response.result;
+  }
+  if (typeof response.result === 'string') {
+    const parsed = Number.parseInt(response.result, 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  for (const log of response.logs) {
+    if (!log.startsWith('EVENT_JSON:')) continue;
+    try {
+      const event = JSON.parse(log.slice('EVENT_JSON:'.length)) as {
+        event?: string;
+        data?:
+          | { workflow_id?: number; token_ids?: string[] }
+          | Array<{ workflow_id?: number; token_ids?: string[] }>;
+      };
+      const payload = Array.isArray(event.data) ? event.data[0] : event.data;
+      if (event.event === 'workflow_minted' && payload?.workflow_id) {
+        return payload.workflow_id;
+      }
+      if (event.event === 'nft_mint' && payload?.token_ids?.[0]) {
+        const parsed = Number.parseInt(payload.token_ids[0], 10);
+        if (Number.isInteger(parsed) && parsed > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Ignore non-matching log lines
+    }
+  }
+  throw new Error('Workflow transaction succeeded, but workflow_id was not returned in outcome.');
+}
+
+export async function mintCoordinatorOnChain(input: {
+  name: string;
+  image: string;
+  personality: string;
+  model: string;
+}): Promise<Coordinator> {
+  const contracts = getContractAddresses();
+  const network: 'near:mainnet' | 'near:testnet' =
+    contracts.network === 'testnet' ? 'near:testnet' : 'near:mainnet';
+
+  return api.mintCoordinator({
+    name: input.name.trim(),
+    image: input.image,
+    personality: input.personality.trim(),
+    model: input.model.trim(),
+    contractId: contracts.factory,
+    network,
+  });
+}
