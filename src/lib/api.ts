@@ -389,3 +389,122 @@ async function readNdjson<E>(
 const body = (value: unknown) => JSON.stringify(value);
 const condition = (modified?: string): Record<string, string> =>
   modified ? { 'if-match': modified } : {};
+
+export type Execute = {
+  txHash: string;
+  signerId: string;
+  network: 'mainnet' | 'testnet';
+  result: unknown;
+  logs: string[];
+};
+
+export type Balance = {
+  userAddress: string;
+  depositAddress: string;
+  spendingAddress: string;
+  mainBalanceWei: string;
+  spendingBalanceWei: string;
+  network: 'mainnet' | 'testnet';
+};
+
+export type Transfer = Balance & {
+  txHash: string;
+};
+
+export type IntentToken = {
+  assetId: string;
+  decimals: number;
+  blockchain: string;
+  symbol: string;
+  price: number;
+  contractAddress?: string;
+};
+
+export type IntentQuote = {
+  depositAddress?: string;
+  depositMemo?: string | null;
+  amountIn: string;
+  amountInFormatted: string;
+  amountInUsd?: string;
+  amountOut: string;
+  amountOutFormatted: string;
+  amountOutUsd?: string;
+  minAmountOut?: string;
+  deadline?: string;
+  timeWhenInactive?: string;
+  timeEstimate?: number;
+};
+
+export type IntentLeg = {
+  source: 'intents' | 'account' | 'external';
+  depositType: 'INTENTS' | 'ORIGIN_CHAIN';
+  originToken: IntentToken;
+  originChainLabel: string;
+  originExplorerUrl?: string;
+  originWalletNetwork: 'evm' | 'svm' | 'near';
+  originWalletAddress: string;
+  intentsAccountId?: string;
+  hexChainId?: string;
+  destinationToken: IntentToken;
+  destinationChainLabel: string;
+  recipientAddress: string;
+  amountAtomic: string;
+  displayAmount: string;
+  quote: IntentQuote;
+};
+
+export type IntentRoute = {
+  action: 'deposit' | 'swap' | 'withdraw';
+  depositType: 'INTENTS' | 'ORIGIN_CHAIN';
+  originToken: IntentToken;
+  originChainLabel: string;
+  originWalletNetwork: 'evm' | 'svm' | 'near';
+  originWalletAddress: string;
+  intentsAccountId?: string;
+  hexChainId?: string;
+  destinationToken: IntentToken;
+  destinationChainLabel: string;
+  recipientAddress: string;
+  amountAtomic: string;
+  displayAmount: string;
+  quote: IntentQuote;
+  legs: IntentLeg[];
+  totalOutFormatted: string;
+  totalOutUsd: string;
+};
+
+export type IntentGenerateResponse = {
+  mode: 'submitted';
+  intentHash: string;
+  correlationId: string;
+};
+
+export type IntentSvmPrepareResponse = {
+  messageBase58: string;
+  transactionBase64: string;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+};
+
+export type IntentSvmBroadcastResponse = {
+  txHash: string;
+  explorerUrl: string;
+};
+
+export type IntentStatus = {
+  status:
+    | 'PENDING_DEPOSIT'
+    | 'KNOWN_DEPOSIT_TX'
+    | 'PROCESSING'
+    | 'SUCCESS'
+    | 'INCOMPLETE_DEPOSIT'
+    | 'REFUNDED'
+    | 'FAILED';
+  updatedAt?: string;
+  swapDetails?: {
+    amountInFormatted?: string;
+    amountOutFormatted?: string;
+    originChainTxHashes?: Array<{ hash: string; explorerUrl?: string }>;
+    destinationChainTxHashes?: Array<{ hash: string; explorerUrl?: string }>;
+  };
+};
