@@ -566,3 +566,163 @@ export type Execution = {
   steps: Trace[];
   bills?: WorkflowBillItem[];
 };
+
+async function consumeExecutionResponse(
+  response: Response,
+  onEvent: (event: RunStreamEvent) => void,
+): Promise<Execution> {
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({ error: 'Request failed.' }))) as {
+      error?: string;
+      code?: string;
+      threadId?: string;
+      missing?: MissingConnectorRequirement[];
+      missingInputs?: MissingInputRequirement[];
+    };
+    throw new Fault(
+      payload.error || 'Request failed.',
+      response.status,
+      payload.code,
+      payload.missing,
+      payload.missingInputs,
+      payload.threadId,
+    );
+  }
+  let finalResult: Execution | null = null;
+  let pausedMissing: MissingConnectorRequirement[] | undefined;
+  let pausedMissingInputs: MissingInputRequirement[] | undefined;
+  let latestThreadId: string | undefined;
+  let streamFault: Fault | null = null;
+  let sawTerminal = false;
+
+  await readNdjson<RunStreamEvent>(response, evt => {
+    if (evt.type === 'ping') return;
+    onEvent(evt);
+    if (evt.type === 'thread:init') {
+      latestThreadId = evt.threadId;
+    } else if (evt.type === 'connector:pause') {
+      pausedMissing = evt.missing;
+      latestThreadId = evt.missing[0]?.threadId ?? latestThreadId;
+    } else if (evt.type === 'input:pause') {
+      pausedMissingInputs = evt.missingInputs;
+      latestThreadId = evt.missingInputs[0]?.threadId ?? latestThreadId;
+    } else if (evt.type === 'result') {
+      sawTerminal = true;
+      finalResult = evt.execution;
+    } else if (evt.type === 'error') {
+      sawTerminal = true;
+      streamFault = new Fault(
+        evt.error || 'Workflow execution failed.',
+        evt.statusCode ?? 500,
+        evt.code,
+        evt.missing ?? pausedMissing,
+        evt.missingInputs ?? pausedMissingInputs,
+        evt.threadId ?? latestThreadId,
+      );
+    }
+  });
+
+  if (streamFault) throw streamFault;
+  if (!sawTerminal || !finalResult) {
+    if (pausedMissingInputs?.length) {
+      throw new Fault(
+        pausedMissingInputs[0]?.reason || 'Additional input is required to run this workflow.',
+        428,
+        'INPUT_REQUIRED',
+        pausedMissing,
+        pausedMissingInputs,
+        pausedMissingInputs[0]?.threadId ?? latestThreadId,
+      );
+    }
+    if (pausedMissing?.length) {
+      throw new Fault(
+        'Connect required accounts to run this workflow.',
+        428,
+        'CONNECTOR_REQUIRED',
+        pausedMissing,
+        undefined,
+        pausedMissing[0]?.threadId ?? latestThreadId,
+      );
+    }
+    throw new Fault(
+      'Workflow execution stream ended before receiving a final result.',
+      502,
+      'STREAM_TRUNCATED',
+      undefined,
+      undefined,
+      latestThreadId,
+    );
+  }
+  return finalResult;
+}
+
+async function streamExecutionRequest(
+  path: string,
+  payloadBody: Record<string, unknown>,
+  headers: Record<string, string> | undefined,
+  onEvent: (event: RunStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<Execution> {
+  const response = await fetch(`${prefix}${path}`, {
+    method: 'POST',
+    signal,
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/x-ndjson',
+      ...(current ? { authorization: `Bearer ${current}` } : {}),
+      ...headers,
+    },
+    body: body(payloadBody),
+  });
+  return consumeExecutionResponse(response, onEvent);
+}
+
+function executeOrStreamRun(
+  path: string,
+  extraBody: Record<string, unknown>,
+  input?: string,
+  composeSession?: {
+    token: string;
+    userAddress: string;
+    network: string;
+  },
+  options?: {
+    attachments?: WorkflowAttachment[];
+    dry?: boolean;
+    threadId?: string;
+    coordinator?: Coordinator | null;
+    connectorDecisions?: ConnectorDecisionItem[];
+    onEvent?: (event: RunStreamEvent) => void;
+    signal?: AbortSignal;
+  },
+): Promise<Execution> {
+  const sessionHeaders = composeSession
+    ? {
+        'x-compose-key': composeSession.token,
+        'x-session-user-address': composeSession.userAddress,
+        'x-network-id': composeSession.network,
+      }
+    : undefined;
+  const reqBody: Record<string, unknown> = {
+    ...extraBody,
+    ...(input !== undefined ? { input } : {}),
+    ...(options?.attachments && options.attachments.length > 0
+      ? { attachments: options.attachments }
+      : {}),
+    ...(options?.dry !== undefined ? { dry: options.dry } : {}),
+    ...(options?.threadId ? { threadId: options.threadId } : {}),
+    ...(options?.coordinator ? { coordinator: options.coordinator } : {}),
+    ...(options?.connectorDecisions && options.connectorDecisions.length > 0
+      ? { connectorDecisions: options.connectorDecisions }
+      : {}),
+  };
+  if (options?.onEvent) {
+    return streamExecutionRequest(path, reqBody, sessionHeaders, options.onEvent, options.signal);
+  }
+  return request<Execution>(path, {
+    method: 'POST',
+    headers: sessionHeaders,
+    signal: options?.signal,
+    body: body(reqBody),
+  });
+}
