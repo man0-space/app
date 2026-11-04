@@ -508,3 +508,61 @@ export type IntentStatus = {
     destinationChainTxHashes?: Array<{ hash: string; explorerUrl?: string }>;
   };
 };
+
+export type Trace = {
+  id: string;
+  label: string;
+  kind: string;
+  entryId: string | null;
+  billWei: string;
+  output: string;
+};
+
+export type WorkflowAttachment = {
+  type: 'image' | 'audio' | 'video' | 'pdf' | 'file' | 'text' | 'json';
+  url: string;
+  mimeType?: string;
+  name?: string;
+  size?: number;
+  cid?: string;
+  text?: string;
+};
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Failed to read selected file.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+export type Execution = {
+  ok: boolean;
+  workflowId: string;
+  threadId?: string;
+  chainWorkflowId: number | null;
+  name: string;
+  creatorUserAddress: string;
+  userAddress: string;
+  network: string;
+  dry?: boolean;
+  composeBillWei: string;
+  creatorFeePercent: number;
+  creatorFeeWei: string;
+  platformFeePercent: number;
+  platformFeeWei: string;
+  serviceFeeWei: string;
+  totalChargedWei: string;
+  txHash: string | null;
+  paymentIntentId: string | null;
+  proofCid?: string | null;
+  proofUrl?: string | null;
+  output: string;
+  steps: Trace[];
+  bills?: WorkflowBillItem[];
+};
