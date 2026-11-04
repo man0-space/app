@@ -1002,3 +1002,71 @@ export function layout(flow: Flow, viewport?: CanvasViewportBox): Flow {
     modified: new Date().toISOString(),
   };
 }
+
+export function parse(value: string): Flow {
+  let flow: Flow;
+  try {
+    flow = JSON.parse(value);
+  } catch {
+    throw new Error('The saved workflow contains invalid JSON.');
+  }
+  if (
+    !flow ||
+    typeof flow.id !== 'string' ||
+    typeof flow.name !== 'string' ||
+    typeof flow.modified !== 'string' ||
+    !Array.isArray(flow.nodes) ||
+    !Array.isArray(flow.edges)
+  ) {
+    throw new Error('The saved workflow is invalid.');
+  }
+  if (flow.brief !== undefined && typeof flow.brief !== 'string') {
+    throw new Error('The saved workflow has an invalid brief.');
+  }
+  if (flow.banner !== undefined && flow.banner !== null && typeof flow.banner !== 'string') {
+    throw new Error('The saved workflow has an invalid banner.');
+  }
+  if (
+    flow.tasks !== undefined &&
+    (!Array.isArray(flow.tasks) || flow.tasks.some((task) => typeof task !== 'string'))
+  ) {
+    throw new Error('The saved workflow has invalid categories.');
+  }
+  const ids = new Set<string>();
+  for (const node of flow.nodes) {
+    if (
+      !node ||
+      typeof node.id !== 'string' ||
+      ids.has(node.id) ||
+      node.type !== 'step' ||
+      !node.position ||
+      !Number.isFinite(node.position.x) ||
+      !Number.isFinite(node.position.y) ||
+      !node.data ||
+      !['model', 'connector', 'agent'].includes(node.data.kind) ||
+      typeof node.data.label !== 'string' ||
+      typeof node.data.note !== 'string'
+    ) {
+      throw new Error('The saved workflow has an invalid step.');
+    }
+    ids.add(node.id);
+  }
+  const edges = flow.edges;
+  let checked: Flow = { ...flow, edges: [] };
+  for (const edge of edges) {
+    if (
+      !edge ||
+      typeof edge.id !== 'string' ||
+      typeof edge.source !== 'string' ||
+      typeof edge.target !== 'string'
+    ) {
+      throw new Error('The saved workflow has an invalid connection.');
+    }
+    try {
+      checked = connect(checked, edge.source, edge.target);
+    } catch {
+      throw new Error('The saved workflow has an invalid connection.');
+    }
+  }
+  return flow;
+}
