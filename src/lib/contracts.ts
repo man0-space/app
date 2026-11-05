@@ -186,3 +186,53 @@ export async function mintCoordinatorOnChain(input: {
     network,
   });
 }
+
+export async function mintWorkflowOnChain(input: {
+  flow: Listing;
+  terms: Pick<Terms, 'creatorFee' | 'tasks' | 'description'>;
+  workflowCardUri: string;
+  banner?: string | null;
+  agentIds?: number[];
+}): Promise<Mint> {
+  const contracts = getContractAddresses();
+  const coordinatorAgentId = input.flow.coordinator?.agentId;
+  const combinedAgentIds = [
+    ...(input.agentIds ?? []),
+    ...(typeof coordinatorAgentId === 'number' && coordinatorAgentId > 0 ? [coordinatorAgentId] : []),
+  ];
+  const uniqueAgentIds = Array.from(
+    new Set(combinedAgentIds.filter(id => Number.isInteger(id) && id > 0)),
+  );
+
+  const executed = await callNearContract({
+    contractId: contracts.workflow,
+    methodName: 'mint_workflow',
+    args: {
+      params: {
+        title: input.flow.name,
+        description: input.terms.description,
+        banner: input.banner ?? '',
+        workflow_card_uri: input.workflowCardUri,
+        units: 1_000_000,
+        lease_enabled: false,
+        lease_duration: 0,
+        lease_percent: 0,
+        has_coordinator: Boolean(input.flow.coordinator),
+        coordinator_model: input.flow.coordinator?.model ?? '',
+      },
+      agent_ids: uniqueAgentIds,
+    },
+    deposit: '0',
+    gas: uniqueAgentIds.length > 0 ? 180_000_000_000_000 : 100_000_000_000_000,
+  });
+
+  const workflowId = parseMintedWorkflowId(executed);
+
+  return {
+    workflowId,
+    txHash: executed.txHash,
+    signerId: executed.signerId,
+    network: executed.network,
+    contractId: contracts.workflow,
+  };
+}
