@@ -137,3 +137,126 @@ function hasEvmWalletAvailable(): boolean {
   if (eip6963Providers.size > 0) return true;
   return Boolean((window as unknown as { ethereum?: unknown }).ethereum);
 }
+
+interface LegacySolanaProvider {
+  publicKey?: { toString: () => string } | null;
+  connect: (opts?: { onlyIfTrusted?: boolean }) => Promise<{ publicKey?: { toString: () => string } }>;
+  request?: (args: { method: string; params?: Record<string, unknown> }) => Promise<unknown>;
+}
+
+function getInjectedSolanaProvider(): LegacySolanaProvider | null {
+  if (typeof window === 'undefined') return null;
+  const win = window as unknown as {
+    phantom?: { solana?: LegacySolanaProvider };
+    solana?: LegacySolanaProvider;
+  };
+  return win.phantom?.solana ?? win.solana ?? null;
+}
+
+function getStandardSolanaWallets() {
+  if (typeof window === 'undefined') return [];
+  try {
+    return getWallets()
+      .get()
+      .filter((w) => 'solana:signTransaction' in w.features);
+  } catch {
+    return [];
+  }
+}
+
+function hasSvmWalletAvailable(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (getInjectedSolanaProvider()) return true;
+  return getStandardSolanaWallets().length > 0;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = window.atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) {
+    bin += String.fromCharCode(bytes[i]!);
+  }
+  return window.btoa(bin);
+}
+
+export async function requestEvmAccounts(
+  preferredAddress?: string,
+): Promise<{ provider: EvmProvider; sender: string }> {
+  const candidates = await discoverEvmProviders();
+  if (candidates.length === 0) {
+    throw new Error('No EVM browser wallet detected.');
+  }
+
+  const targetLower = preferredAddress?.trim().toLowerCase() || '';
+  let fallbackAuthorized: { provider: EvmProvider; sender: string } | null = null;
+
+  for (const { provider } of candidates) {
+    try {
+      const accounts = (await Promise.race([
+        provider.request({ method: 'eth_accounts' }),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 900)),
+      ])) as string[] | null;
+      if (Array.isArray(accounts) && accounts.length > 0) {
+        const matched = targetLower
+          ? accounts.find((a) => a.toLowerCase() === targetLower)
+          : undefined;
+        if (matched) {
+          return { provider, sender: matched };
+        }
+        if (!fallbackAuthorized) {
+          fallbackAuthorized = { provider, sender: accounts[0] };
+        }
+      }
+    } catch {
+      // Ignore passive provider check failure
+    }
+  }
+
+  if (fallbackAuthorized && !targetLower) {
+    return fallbackAuthorized;
+  }
+
+  let firstPrompted: { provider: EvmProvider; sender: string } | null = null;
+  let lastErr: unknown = null;
+  for (const { provider } of candidates) {
+    try {
+      const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as string[];
+      if (Array.isArray(accounts) && accounts.length > 0) {
+        const matched = targetLower
+          ? accounts.find((a) => a.toLowerCase() === targetLower)
+          : undefined;
+        if (matched) {
+          return { provider, sender: matched };
+        }
+        if (!targetLower) {
+          return { provider, sender: accounts[0]! };
+        }
+        if (!firstPrompted) {
+          firstPrompted = { provider, sender: accounts[0]! };
+        }
+      }
+    } catch (err) {
+      const code = (err as { code?: number })?.code;
+      if (code === 4001) throw err;
+      lastErr = err;
+    }
+  }
+
+  if (targetLower && (firstPrompted || fallbackAuthorized)) {
+    const activeAddr = (firstPrompted ?? fallbackAuthorized)!.sender;
+    throw new Error(
+      `Switch your EVM wallet to ${preferredAddress!.slice(0, 6)}…${preferredAddress!.slice(-4)} (currently active: ${activeAddr.slice(0, 6)}…${activeAddr.slice(-4)}) and try again.`,
+    );
+  }
+  if (firstPrompted) return firstPrompted;
+  if (fallbackAuthorized) return fallbackAuthorized;
+  throw new Error(extractWalletErrorMessage(lastErr, 'Select an account in your wallet to continue.'));
+}
