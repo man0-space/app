@@ -57,3 +57,270 @@ function writeCachedBalance(userAddress: string, snap: CachedBalanceSnapshot): v
     // Ignore storage quota errors
   }
 }
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const userAddress = user?.userAddress ?? null;
+  const initialBal = readCachedBalance(userAddress);
+
+  const [sessionState, setSessionState] = useState<ActiveSessionMetadata | null>(null);
+  const [spendingAddress, setSpendingAddress] = useState<string | null>(
+    () => initialBal?.spendingAddress ?? userAddress,
+  );
+  const [sessionNetwork, setSessionNetwork] = useState<Network>(
+    () => initialBal?.network ?? nearNetworkId(),
+  );
+  const [mainBalanceWei, setMainBalanceWei] = useState<string>(
+    () => initialBal?.mainBalanceWei ?? '0',
+  );
+  const [spendingBalanceWei, setSpendingBalanceWei] = useState<string>(
+    () => initialBal?.spendingBalanceWei ?? '0',
+  );
+  const [loading, setLoading] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [approvalStep, setApprovalStep] = useState<ApprovalStep>('idle');
+  const [lastApprovalTxUrl, setLastApprovalTxUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!userAddress) {
+      setSessionState(null);
+      setSpendingAddress(null);
+      setMainBalanceWei('0');
+      setSpendingBalanceWei('0');
+      setLastApprovalTxUrl(null);
+      setError(null);
+      return;
+    }
+    const warm = readCachedBalance(userAddress);
+    if (warm) {
+      setSpendingAddress(warm.spendingAddress);
+      setSessionNetwork(warm.network);
+      setMainBalanceWei(warm.mainBalanceWei);
+      setSpendingBalanceWei(warm.spendingBalanceWei);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+    try {
+      const bal = await api.nearBalance();
+      const net = sessionNetworkFor(bal.network);
+      setSessionNetwork(net);
+      setSpendingAddress(bal.spendingAddress);
+      setMainBalanceWei(bal.mainBalanceWei);
+      setSpendingBalanceWei(bal.spendingBalanceWei);
+      writeCachedBalance(userAddress, {
+        spendingAddress: bal.spendingAddress,
+        mainBalanceWei: bal.mainBalanceWei,
+        spendingBalanceWei: bal.spendingBalanceWei,
+        network: net,
+      });
+
+      let active = await readSession(bal.spendingAddress, net).catch(() => null);
+      const activeRemaining = BigInt(active?.budgetRemaining ?? '0');
+      if (
+        BigInt(bal.spendingBalanceWei) > 0n &&
+        (!active?.hasSession ||
+          !active.token ||
+          !active.status?.isActive ||
+          active.status.warnings?.budgetDepleted ||
+          activeRemaining <= 0n)
+      ) {
+        await activateSession(bal.spendingAddress, bal.spendingBalanceWei, net);
+        active = await readSession(bal.spendingAddress, net).catch(() => null);
+      }
+      setSessionState(active);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load balance');
+    } finally {
+      setLoading(false);
+    }
+  }, [userAddress]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const approveLimit = useCallback(
+    async (usdAmount: string) => {
+      if (!userAddress) {
+        throw new Error('Sign in first.');
+      }
+      const amountMicro = parseUsdToMicroUsdc(usdAmount);
+      if (!amountMicro) {
+        throw new Error('Enter a valid USD amount.');
+      }
+      setApproving(true);
+      setApprovalStep('settling');
+      setError(null);
+      setLastApprovalTxUrl(null);
+      try {
+        const result = await api.spendingApprove({
+          amountWei: String(amountMicro),
+        });
+        const net = sessionNetworkFor(result.network);
+        setSessionNetwork(net);
+        setSpendingAddress(result.spendingAddress);
+        setMainBalanceWei(result.mainBalanceWei);
+        setSpendingBalanceWei(result.spendingBalanceWei);
+        writeCachedBalance(userAddress, {
+          spendingAddress: result.spendingAddress,
+          mainBalanceWei: result.mainBalanceWei,
+          spendingBalanceWei: result.spendingBalanceWei,
+          network: net,
+        });
+        setLastApprovalTxUrl(
+          result.txHash ? explorerTxUrl(result.txHash, result.network) : null,
+        );
+
+        setApprovalStep('activating');
+        await activateSession(
+          result.spendingAddress,
+          result.spendingBalanceWei,
+          net,
+          30 * 24 * 60 * 60 * 1000,
+          true,
+        );
+        const active = await readSession(result.spendingAddress, net).catch(() => null);
+        setSessionState(active);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Could not approve workflow limit';
+        setError(msg);
+        throw err;
+      } finally {
+        setApprovalStep('idle');
+        setApproving(false);
+      }
+    },
+    [userAddress],
+  );
+
+  const reclaimLimit = useCallback(async () => {
+    if (!userAddress) {
+      throw new Error('Sign in first.');
+    }
+    setApproving(true);
+    setApprovalStep('reclaiming');
+    setError(null);
+    try {
+      if (spendingAddress) {
+        await revokeSession(spendingAddress, sessionNetwork, sessionState?.keyId).catch(
+          () => undefined,
+        );
+      }
+      const result = await api.spendingReclaim();
+      const net = sessionNetworkFor(result.network);
+      setSessionNetwork(net);
+      setSpendingAddress(result.spendingAddress);
+      setMainBalanceWei(result.mainBalanceWei);
+      setSpendingBalanceWei(result.spendingBalanceWei);
+      writeCachedBalance(userAddress, {
+        spendingAddress: result.spendingAddress,
+        mainBalanceWei: result.mainBalanceWei,
+        spendingBalanceWei: result.spendingBalanceWei,
+        network: net,
+      });
+      setLastApprovalTxUrl(
+        result.txHash ? explorerTxUrl(result.txHash, result.network) : null,
+      );
+      setSessionState(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not return unused funds';
+      setError(msg);
+      throw err;
+    } finally {
+      setApprovalStep('idle');
+      setApproving(false);
+    }
+  }, [userAddress, spendingAddress, sessionNetwork, sessionState?.keyId]);
+
+  const getRunSession = useCallback(async () => {
+    if (!spendingAddress || BigInt(spendingBalanceWei) <= 0n) {
+      return null;
+    }
+    const activeRemaining = BigInt(sessionState?.budgetRemaining ?? '0');
+    if (
+      sessionState?.hasSession &&
+      sessionState.token &&
+      sessionState.status?.isActive &&
+      !sessionState.status.warnings?.budgetDepleted &&
+      activeRemaining > 0n
+    ) {
+      return {
+        token: sessionState.token,
+        userAddress: spendingAddress,
+        network: sessionNetwork,
+      };
+    }
+    const created = await activateSession(
+      spendingAddress,
+      spendingBalanceWei,
+      sessionNetwork,
+    );
+    const active = await readSession(spendingAddress, sessionNetwork).catch(() => null);
+    setSessionState(active);
+    return {
+      token: created.token,
+      userAddress: spendingAddress,
+      network: sessionNetwork,
+    };
+  }, [spendingAddress, spendingBalanceWei, sessionState, sessionNetwork]);
+
+  const totalBalanceWei = useMemo(
+    () => (BigInt(mainBalanceWei || '0') + BigInt(spendingBalanceWei || '0')).toString(),
+    [mainBalanceWei, spendingBalanceWei],
+  );
+
+  const availableUsd = useMemo(() => formatMicroUsdc(mainBalanceWei), [mainBalanceWei]);
+  const approvedUsd = useMemo(() => formatMicroUsdc(spendingBalanceWei), [spendingBalanceWei]);
+  const totalUsd = useMemo(() => formatMicroUsdc(totalBalanceWei), [totalBalanceWei]);
+  const hasApprovedLimit = useMemo(
+    () => BigInt(spendingBalanceWei || '0') > 0n,
+    [spendingBalanceWei],
+  );
+
+  const value = useMemo(
+    () => ({
+      sessionState,
+      spendingAddress,
+      mainBalanceWei,
+      spendingBalanceWei,
+      totalBalanceWei,
+      availableUsd,
+      approvedUsd,
+      totalUsd,
+      hasApprovedLimit,
+      loading,
+      approving,
+      approvalStep,
+      lastApprovalTxUrl,
+      error,
+      refresh,
+      approveLimit,
+      reclaimLimit,
+      getRunSession,
+    }),
+    [
+      sessionState,
+      spendingAddress,
+      mainBalanceWei,
+      spendingBalanceWei,
+      totalBalanceWei,
+      availableUsd,
+      approvedUsd,
+      totalUsd,
+      hasApprovedLimit,
+      loading,
+      approving,
+      approvalStep,
+      lastApprovalTxUrl,
+      error,
+      refresh,
+      approveLimit,
+      reclaimLimit,
+      getRunSession,
+    ],
+  );
+
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
