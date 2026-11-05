@@ -234,3 +234,150 @@ export async function connectComposioAccountPopup(
   if (!popup.closed) popup.close();
   throw new Error('Timed out waiting for account connection.');
 }
+
+export async function connectGatedMcpCredentials(
+  userAddress: string,
+  slug: string,
+  vars: Record<string, string>,
+): Promise<void> {
+  const sdk = await ensureAuthenticatedComposeSdk(userAddress);
+  const res = await sdk.connectors.gated.connect({
+    userAddress,
+    slug,
+    vars,
+  });
+  if (!res.success && res.missing?.length) {
+    throw new Error(
+      `Missing required credentials: ${res.missing.map(m => m.varName).join(', ')}`,
+    );
+  }
+  await sdk.connectors.gated.grant({ userAddress, slug });
+}
+
+function resolveConnectorBinding(entry?: Entry): string | null {
+  const raw = entry?.id?.trim();
+  if (!raw) return null;
+  if (raw.startsWith('account:') || raw.startsWith('mcp:') || raw.startsWith('onchain:')) {
+    return raw;
+  }
+  const clean = raw.replace(/^connector:/i, '').trim();
+  if (clean.startsWith('account:') || clean.startsWith('mcp:') || clean.startsWith('onchain:')) {
+    return clean;
+  }
+  return clean ? `mcp:${clean}` : null;
+}
+
+export type ConnectorAuthState = 'connected' | 'needs_auth';
+
+export async function checkWorkflowConnectors(
+  userAddress: string,
+  nodes: readonly Block[],
+): Promise<{
+  authStateByNodeId: Record<string, ConnectorAuthState>;
+  missing: MissingConnectorRequirement[];
+}> {
+  const connectorNodes = nodes.filter(n => n.data.kind === 'connector' && n.data.entry?.id);
+  if (!userAddress || connectorNodes.length === 0) {
+    return { authStateByNodeId: {}, missing: [] };
+  }
+
+  const sdk = await ensureAuthenticatedComposeSdk(userAddress);
+  const status = await sdk.connectors.status({ userAddress }).catch(() => null);
+  if (!status) {
+    return { authStateByNodeId: {}, missing: [] };
+  }
+
+  const authStateByNodeId: Record<string, ConnectorAuthState> = {};
+  const missingByKey = new Map<string, MissingConnectorRequirement>();
+
+  for (const node of connectorNodes) {
+    const binding = resolveConnectorBinding(node.data.entry);
+    if (!binding) continue;
+    const entryId = node.data.entry?.id || binding;
+    const displayName = node.data.entry?.name || node.data.label;
+
+    if (binding.startsWith('onchain:')) {
+      authStateByNodeId[node.id] = 'connected';
+      continue;
+    }
+
+    if (binding.startsWith('account:')) {
+      const rawSlug = binding.slice('account:'.length);
+      const slugLower = rawSlug.toLowerCase();
+      const matchedAcc =
+        (status.accounts ?? []).find(
+          acc => acc.slug.toLowerCase() === slugLower && acc.connected,
+        ) ?? (status.accounts ?? []).find(acc => acc.slug.toLowerCase() === slugLower);
+
+      if (matchedAcc?.connected) {
+        if (!matchedAcc.granted) {
+          await sdk.connectors.accounts
+            .grant({ userAddress, toolkit: matchedAcc.slug })
+            .catch(() => undefined);
+        }
+        authStateByNodeId[node.id] = 'connected';
+      } else {
+        authStateByNodeId[node.id] = 'needs_auth';
+        missingByKey.set(binding.toLowerCase(), {
+          entryId,
+          slug: rawSlug,
+          name: displayName,
+          type: 'account',
+          userAddress,
+          reason: `Connect ${displayName} on Compose Market to enable this step.`,
+        });
+      }
+      continue;
+    }
+
+    if (binding.startsWith('mcp:')) {
+      const rawSlug = binding.slice('mcp:'.length);
+      const slugLower = rawSlug.toLowerCase();
+      const matchedConn =
+        (status.connectors ?? []).find(
+          conn => conn.slug.toLowerCase() === slugLower && conn.connected,
+        ) ?? (status.connectors ?? []).find(conn => conn.slug.toLowerCase() === slugLower);
+
+      if (matchedConn?.connected && (matchedConn.missingVars?.length ?? 0) === 0) {
+        if (!matchedConn.allowed) {
+          await sdk.connectors.gated
+            .grant({ userAddress, slug: matchedConn.slug })
+            .catch(() => undefined);
+        }
+        authStateByNodeId[node.id] = 'connected';
+      } else if (matchedConn) {
+        authStateByNodeId[node.id] = 'needs_auth';
+        missingByKey.set(binding.toLowerCase(), {
+          entryId,
+          slug: matchedConn.slug || rawSlug,
+          name: displayName,
+          type: 'gated',
+          userAddress,
+          ...(matchedConn.missingVars?.length ? { missingVars: matchedConn.missingVars } : {}),
+          reason: `Configure ${displayName} credentials on Compose Market to enable this step.`,
+        });
+      } else {
+        const specs = await fetchMcpCredentialSpecs(userAddress, rawSlug).catch(() => []);
+        if (specs.length > 0) {
+          authStateByNodeId[node.id] = 'needs_auth';
+          missingByKey.set(binding.toLowerCase(), {
+            entryId,
+            slug: rawSlug,
+            name: displayName,
+            type: 'gated',
+            userAddress,
+            missingVars: specs,
+            reason: `Configure ${displayName} credentials on Compose Market to enable this step.`,
+          });
+        } else {
+          authStateByNodeId[node.id] = 'connected';
+        }
+      }
+    }
+  }
+
+  return {
+    authStateByNodeId,
+    missing: [...missingByKey.values()],
+  };
+}
