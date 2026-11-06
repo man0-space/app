@@ -513,3 +513,41 @@ async function sendEvmOriginTransfer(input: {
 
   return { txHash, sender };
 }
+
+function resolveNearTokenContract(leg: IntentLeg): string {
+  const explicit = leg.originToken.contractAddress?.trim();
+  if (explicit) return explicit;
+  if (leg.originToken.assetId.startsWith('nep141:')) {
+    return leg.originToken.assetId.slice('nep141:'.length).trim();
+  }
+  throw new Error(`Cannot determine token contract for ${leg.originToken.symbol}.`);
+}
+
+async function sendNearOriginTransfer(input: {
+  leg: IntentLeg;
+  depositAddress: string;
+}): Promise<{ txHash: string }> {
+  const contractId = resolveNearTokenContract(input.leg);
+  const executed = await callNearContract({
+    contractId,
+    methodName: 'ft_transfer',
+    args: {
+      receiver_id: input.depositAddress,
+      amount: input.leg.amountAtomic,
+      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+    },
+    deposit: '1',
+    gas: 50_000_000_000_000,
+  });
+
+  await api
+    .intentsDeposit({
+      txHash: executed.txHash,
+      depositAddress: input.depositAddress,
+      nearSenderAccount: input.leg.originWalletAddress,
+      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+    })
+    .catch(() => undefined);
+
+  return { txHash: executed.txHash };
+}
