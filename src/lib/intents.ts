@@ -551,3 +551,110 @@ async function sendNearOriginTransfer(input: {
 
   return { txHash: executed.txHash };
 }
+
+async function sendSvmOriginTransfer(input: {
+  leg: IntentLeg;
+  depositAddress: string;
+}): Promise<{ txHash: string }> {
+  const preferred = input.leg.originWalletAddress.trim();
+  const injected = getInjectedSolanaProvider();
+
+  if (injected && typeof injected.request === 'function') {
+    const conn = await injected.connect();
+    const senderAddress =
+      conn?.publicKey?.toString() || injected.publicKey?.toString() || preferred;
+    if (!senderAddress) {
+      throw new Error('Select an account in your Solana wallet to continue.');
+    }
+
+    const prep = await api.intentsSvmPrepare({
+      senderAddress,
+      depositAddress: input.depositAddress,
+      amountAtomic: input.leg.amountAtomic,
+      ...(input.leg.originToken.contractAddress
+        ? { tokenContract: input.leg.originToken.contractAddress }
+        : {}),
+      decimals: input.leg.originToken.decimals,
+      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+    });
+
+    const signed = (await injected.request({
+      method: 'signTransaction',
+      params: { message: prep.messageBase58 },
+    })) as { serialize?: () => Uint8Array } | Uint8Array;
+
+    const signedBytes =
+      signed instanceof Uint8Array
+        ? signed
+        : typeof signed?.serialize === 'function'
+          ? signed.serialize()
+          : null;
+    if (!signedBytes) {
+      throw new Error('Solana wallet did not return a signed transaction.');
+    }
+
+    const sent = await api.intentsSvmBroadcast({
+      signedTransactionBase64: bytesToBase64(signedBytes),
+      depositAddress: input.depositAddress,
+      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+    });
+    return { txHash: sent.txHash };
+  }
+
+  const standardWallets = getStandardSolanaWallets();
+  if (standardWallets.length === 0) {
+    throw new Error('No Solana browser wallet detected.');
+  }
+
+  const wallet =
+    standardWallets.find((w) => w.accounts.some((a) => a.address === preferred)) ??
+    standardWallets[0]!;
+
+  let accounts = wallet.accounts;
+  if (accounts.length === 0 && 'standard:connect' in wallet.features) {
+    const connectFeature = wallet.features['standard:connect'] as {
+      connect: () => Promise<{ accounts: readonly { address: string }[] }>;
+    };
+    const connected = await connectFeature.connect();
+    accounts = connected.accounts as typeof wallet.accounts;
+  }
+
+  const targetAccount =
+    accounts.find((a) => a.address === preferred) ?? accounts[0];
+  if (!targetAccount) {
+    throw new Error('Select an account in your Solana wallet to continue.');
+  }
+
+  const prep = await api.intentsSvmPrepare({
+    senderAddress: targetAccount.address,
+    depositAddress: input.depositAddress,
+    amountAtomic: input.leg.amountAtomic,
+    ...(input.leg.originToken.contractAddress
+      ? { tokenContract: input.leg.originToken.contractAddress }
+      : {}),
+    decimals: input.leg.originToken.decimals,
+    ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+  });
+
+  const signFeature = wallet.features['solana:signTransaction'] as {
+    signTransaction: (
+      ...inputs: Array<{ account: unknown; transaction: Uint8Array }>
+    ) => Promise<readonly { signedTransaction: Uint8Array }[]>;
+  };
+
+  const outputs = await signFeature.signTransaction({
+    account: targetAccount,
+    transaction: base64ToBytes(prep.transactionBase64),
+  });
+  const signedBytes = outputs?.[0]?.signedTransaction;
+  if (!signedBytes) {
+    throw new Error('Solana wallet did not return a signed transaction.');
+  }
+
+  const sent = await api.intentsSvmBroadcast({
+    signedTransactionBase64: bytesToBase64(signedBytes),
+    depositAddress: input.depositAddress,
+    ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+  });
+  return { txHash: sent.txHash };
+}
