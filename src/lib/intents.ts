@@ -658,3 +658,78 @@ async function sendSvmOriginTransfer(input: {
   });
   return { txHash: sent.txHash };
 }
+
+export async function executeIntentLeg(leg: IntentLeg): Promise<{
+  depositAddress: string;
+  depositMemo?: string | null;
+  txHash?: string;
+  intentHash?: string;
+}> {
+  const depositAddress = leg.quote.depositAddress;
+  if (!depositAddress) {
+    throw new Error('Could not generate transfer address. Try again.');
+  }
+
+  if (leg.depositType === 'INTENTS') {
+    const generated = await api.intentsGenerate({ depositAddress });
+    return {
+      depositAddress,
+      depositMemo: leg.quote.depositMemo,
+      intentHash: generated.intentHash,
+    };
+  }
+
+  if (leg.originWalletNetwork === 'evm') {
+    const { txHash } = await sendEvmOriginTransfer({ leg, depositAddress });
+    return { depositAddress, depositMemo: leg.quote.depositMemo, txHash };
+  }
+
+  if (leg.originWalletNetwork === 'svm') {
+    const { txHash } = await sendSvmOriginTransfer({ leg, depositAddress });
+    return { depositAddress, depositMemo: leg.quote.depositMemo, txHash };
+  }
+
+  if (leg.originWalletNetwork === 'near') {
+    const { txHash } = await sendNearOriginTransfer({ leg, depositAddress });
+    return { depositAddress, depositMemo: leg.quote.depositMemo, txHash };
+  }
+
+  throw new Error('Use the manual deposit address below to send from this wallet.');
+}
+
+export interface LegProgressUpdate {
+  state: 'sending' | 'sent';
+  txHash?: string;
+  intentHash?: string;
+}
+
+export async function executeIntentRoute(
+  route: IntentRoute,
+  onLegProgress?: (index: number, update: LegProgressUpdate) => void,
+): Promise<
+  Array<{
+    depositAddress: string;
+    depositMemo?: string | null;
+    txHash?: string;
+    intentHash?: string;
+  }>
+> {
+  const legs = routeLegs(route);
+  const results: Array<{
+    depositAddress: string;
+    depositMemo?: string | null;
+    txHash?: string;
+    intentHash?: string;
+  }> = [];
+  for (let i = 0; i < legs.length; i++) {
+    onLegProgress?.(i, { state: 'sending' });
+    const res = await executeIntentLeg(legs[i]!);
+    onLegProgress?.(i, {
+      state: 'sent',
+      txHash: res.txHash,
+      intentHash: res.intentHash,
+    });
+    results.push(res);
+  }
+  return results;
+}
