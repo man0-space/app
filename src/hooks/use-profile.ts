@@ -98,3 +98,94 @@ export function formatCreatorHandle(
   if (clean) return clean;
   return formatCreatorShortAddress(address) || '';
 }
+
+export async function prepareMediaBlob(
+  file: File,
+  kind: 'avatar' | 'banner' | 'workflow-banner',
+): Promise<File> {
+  const bitmap = await createImageBitmap(file);
+  const maxWidth = kind === 'avatar' ? 512 : 1440;
+  const maxHeight = kind === 'avatar' ? 512 : 640;
+
+  let targetW = bitmap.width;
+  let targetH = bitmap.height;
+
+  if (kind === 'avatar') {
+    const side = Math.min(maxWidth, Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bitmap.close();
+      throw new Error('Image processing is unavailable.');
+    }
+    const scale = Math.max(side / bitmap.width, side / bitmap.height);
+    const drawW = bitmap.width * scale;
+    const drawH = bitmap.height * scale;
+    ctx.drawImage(bitmap, (side - drawW) / 2, (side - drawH) / 2, drawW, drawH);
+    bitmap.close();
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Could not encode image.'))),
+        'image/webp',
+        0.88,
+      );
+    });
+    return new File([blob], `${kind}-${Date.now()}.webp`, { type: 'image/webp' });
+  }
+
+  const ratio = Math.min(1, maxWidth / targetW, maxHeight / targetH);
+  targetW = Math.max(1, Math.round(targetW * ratio));
+  targetH = Math.max(1, Math.round(targetH * ratio));
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close();
+    throw new Error('Image processing is unavailable.');
+  }
+  ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+  bitmap.close();
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('Could not encode banner image.'))),
+      'image/webp',
+      0.88,
+    );
+  });
+  return new File([blob], `${kind}-${Date.now()}.webp`, { type: 'image/webp' });
+}
+
+export async function uploadMediaImage(
+  file: File,
+  kind: 'avatar' | 'banner' | 'workflow-banner',
+): Promise<string> {
+  const processed = await prepareMediaBlob(file, kind);
+  if (authenticated()) {
+    const pinned = await uploadFileToIpfs(processed, { mediaKind: kind });
+    return pinned.url;
+  }
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === 'string'
+        ? resolve(reader.result)
+        : reject(new Error('Could not read image.'));
+    reader.onerror = () => reject(new Error('Could not read image.'));
+    reader.readAsDataURL(processed);
+  });
+}
+
+function looksLikeChainAddress(raw?: string | null): boolean {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  return (
+    /^0u[a-z0-9]{18,}$/i.test(s) ||
+    /^0x[a-f0-9]{40}$/i.test(s) ||
+    /^[a-f0-9]{64}$/i.test(s) ||
+    /\.(?:near|testnet)$/i.test(s) ||
+    /^(?=.*[0-9A-Z])[1-9A-HJ-NP-Za-km-z]{32,48}$/.test(s)
+  );
+}
