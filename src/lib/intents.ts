@@ -260,3 +260,102 @@ export async function requestEvmAccounts(
   if (fallbackAuthorized) return fallbackAuthorized;
   throw new Error(extractWalletErrorMessage(lastErr, 'Select an account in your wallet to continue.'));
 }
+
+async function switchOrAddEvmChain(eth: EvmProvider, hexChainId: string): Promise<void> {
+  try {
+    await eth.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: hexChainId }],
+    });
+  } catch (err) {
+    const errRec = err as {
+      code?: number;
+      data?: { originalError?: { code?: number } };
+      cause?: { code?: number };
+    };
+    const code = errRec?.code ?? errRec?.data?.originalError?.code ?? errRec?.cause?.code;
+    const errMsg = extractWalletErrorMessage(err, '');
+    const isMissingChain =
+      code === 4902 || /unrecognized chain|unknown chain|try adding the chain|4902/i.test(errMsg);
+    if (!isMissingChain) throw err;
+    const numericId = Number.parseInt(hexChainId, 16);
+    const registry = (await fetch('https://chainid.network/chains.json').then((r) =>
+      r.json(),
+    )) as Array<{
+      chainId: number;
+      name: string;
+      rpc?: string[];
+      nativeCurrency?: { name: string; symbol: string; decimals: number };
+      explorers?: Array<{ url: string }>;
+    }>;
+    const entry = registry.find((c) => c.chainId === numericId);
+    const rpcUrls = (entry?.rpc ?? []).filter(
+      (u) => u.startsWith('https://') && !u.includes('${'),
+    );
+    if (!entry || rpcUrls.length === 0) throw err;
+    await eth.request({
+      method: 'wallet_addEthereumChain',
+      params: [
+        {
+          chainId: hexChainId,
+          chainName: entry.name,
+          rpcUrls,
+          nativeCurrency: entry.nativeCurrency ?? {
+            name: 'Ether',
+            symbol: 'ETH',
+            decimals: 18,
+          },
+          ...(entry.explorers?.[0]?.url
+            ? { blockExplorerUrls: [entry.explorers[0].url] }
+            : {}),
+        },
+      ],
+    });
+  }
+}
+
+export async function resolveIntentRoute(input: {
+  prompt: string;
+  dry: boolean;
+  links: WalletLink[];
+}): Promise<IntentRoute> {
+  const clean = input.prompt.trim();
+  if (!clean) {
+    throw new Fault('Describe what you want to fund, swap, or withdraw.', 400);
+  }
+  const seen = new Map<string, { network: 'evm' | 'svm'; address: string }>();
+  for (const item of input.links) {
+    if (!item.address?.trim()) continue;
+    const key = `${item.network}:${item.address.trim().toLowerCase()}`;
+    seen.set(key, { network: item.network, address: item.address.trim() });
+  }
+  return api.intentsQuote({
+    prompt: clean,
+    dry: input.dry,
+    connectedWallets: [...seen.values()],
+  });
+}
+
+export function routeLegs(route: IntentRoute): IntentLeg[] {
+  if (Array.isArray(route.legs) && route.legs.length > 0) {
+    return route.legs;
+  }
+  return [
+    {
+      source: route.depositType === 'INTENTS' ? 'intents' : 'external',
+      depositType: route.depositType ?? 'ORIGIN_CHAIN',
+      originToken: route.originToken,
+      originChainLabel: route.originChainLabel,
+      originWalletNetwork: route.originWalletNetwork,
+      originWalletAddress: route.originWalletAddress,
+      intentsAccountId: route.intentsAccountId,
+      hexChainId: route.hexChainId,
+      destinationToken: route.destinationToken,
+      destinationChainLabel: route.destinationChainLabel,
+      recipientAddress: route.recipientAddress,
+      amountAtomic: route.amountAtomic,
+      displayAmount: route.displayAmount,
+      quote: route.quote,
+    },
+  ];
+}
