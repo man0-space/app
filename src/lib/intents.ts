@@ -359,3 +359,157 @@ export function routeLegs(route: IntentRoute): IntentLeg[] {
     },
   ];
 }
+
+export function canAutoSendOrigin(route: IntentRoute): boolean {
+  if (typeof window === 'undefined') return false;
+  const legs = routeLegs(route);
+  return legs.every((leg) => {
+    if (leg.depositType === 'INTENTS') {
+      return true;
+    }
+    if (leg.originWalletNetwork === 'near') {
+      return true;
+    }
+    if (leg.originWalletNetwork === 'evm') {
+      return hasEvmWalletAvailable();
+    }
+    if (leg.originWalletNetwork === 'svm') {
+      return hasSvmWalletAvailable();
+    }
+    return false;
+  });
+}
+
+function parseHexQuantity(raw: unknown): bigint | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!/^0x[0-9a-fA-F]+$/.test(trimmed)) return null;
+  try {
+    return BigInt(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+async function sendEvmOriginTransfer(input: {
+  leg: IntentLeg;
+  depositAddress: string;
+}): Promise<{ txHash: string; sender: string }> {
+  const { provider: eth, sender } = await requestEvmAccounts(input.leg.originWalletAddress);
+
+  if (input.leg.hexChainId) {
+    await switchOrAddEvmChain(eth, input.leg.hexChainId);
+  }
+
+  const amountBig = BigInt(input.leg.amountAtomic);
+  const tokenContract = input.leg.originToken.contractAddress?.trim();
+  const isErc20 = Boolean(tokenContract && /^0x[a-fA-F0-9]{40}$/.test(tokenContract));
+
+  let baseTxParams: Record<string, string>;
+  if (isErc20 && tokenContract) {
+    const cleanRecipient = input.depositAddress.replace(/^0x/i, '').toLowerCase();
+    if (!/^[a-f0-9]{40}$/.test(cleanRecipient)) {
+      throw new Error('Deposit address format does not match EVM.');
+    }
+    const data =
+      '0xa9059cbb' +
+      cleanRecipient.padStart(64, '0') +
+      amountBig.toString(16).padStart(64, '0');
+    baseTxParams = {
+      from: sender,
+      to: tokenContract,
+      value: '0x0',
+      data,
+    };
+  } else {
+    baseTxParams = {
+      from: sender,
+      to: input.depositAddress,
+      value: `0x${amountBig.toString(16)}`,
+    };
+  }
+
+  const [latestBlock, gasPriceHex, priorityFeeHex, estimatedGasHex, walletBalHex] =
+    await Promise.all([
+      eth
+        .request({ method: 'eth_getBlockByNumber', params: ['latest', false] })
+        .catch(() => null) as Promise<{ baseFeePerGas?: string } | null>,
+      eth.request({ method: 'eth_gasPrice', params: [] }).catch(() => null),
+      eth.request({ method: 'eth_maxPriorityFeePerGas', params: [] }).catch(() => null),
+      eth.request({ method: 'eth_estimateGas', params: [baseTxParams] }).catch(() => null),
+      !isErc20 && amountBig > 0n
+        ? eth.request({ method: 'eth_getBalance', params: [sender, 'latest'] }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+  const baseFee = parseHexQuantity(latestBlock?.baseFeePerGas);
+  const gasPrice = parseHexQuantity(gasPriceHex);
+  const rpcPriorityFee = parseHexQuantity(priorityFeeHex);
+  const estimatedGas = parseHexQuantity(estimatedGasHex);
+  const walletBalance = parseHexQuantity(walletBalHex);
+
+  const feeOverrides: Record<string, string> = {};
+  const fallbackGas = isErc20 ? 95_000n : 21_000n;
+  const gasLimit = estimatedGas && estimatedGas > 0n ? (estimatedGas * 125n) / 100n : fallbackGas;
+  feeOverrides.gas = `0x${gasLimit.toString(16)}`;
+
+  if (baseFee !== null || gasPrice !== null) {
+    const priorityFloor = 1_000_000n; // 0.001 gwei floor on L2s
+    const priorityFee =
+      rpcPriorityFee !== null && rpcPriorityFee > priorityFloor ? rpcPriorityFee : priorityFloor;
+    const fromBase = baseFee !== null ? baseFee * 3n + priorityFee : 0n;
+    const fromGasPrice = gasPrice !== null ? gasPrice * 2n + priorityFee : 0n;
+    let maxFeePerGas = fromBase > fromGasPrice ? fromBase : fromGasPrice;
+
+    if (!isErc20 && amountBig > 0n && walletBalance !== null && walletBalance > amountBig) {
+      const remainingForGas = walletBalance - amountBig;
+      const maxAffordablePerGas = remainingForGas / gasLimit;
+      const minSafePerGas =
+        baseFee !== null ? (baseFee * 135n) / 100n + priorityFee : priorityFee * 2n;
+      if (maxAffordablePerGas < maxFeePerGas && maxAffordablePerGas >= minSafePerGas) {
+        maxFeePerGas = maxAffordablePerGas;
+      }
+    }
+
+    if (maxFeePerGas > 0n) {
+      const effectivePriority = priorityFee < maxFeePerGas ? priorityFee : maxFeePerGas;
+      feeOverrides.maxFeePerGas = `0x${maxFeePerGas.toString(16)}`;
+      feeOverrides.maxPriorityFeePerGas = `0x${effectivePriority.toString(16)}`;
+    }
+  }
+
+  let txHash: string;
+  if (Object.keys(feeOverrides).length > 0) {
+    try {
+      txHash = (await eth.request({
+        method: 'eth_sendTransaction',
+        params: [{ ...baseTxParams, ...feeOverrides }],
+      })) as string;
+    } catch (err) {
+      const code = (err as { code?: number })?.code;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (code === 4001 || /user rejected|user denied|canceled/i.test(msg)) {
+        throw err;
+      }
+      txHash = (await eth.request({
+        method: 'eth_sendTransaction',
+        params: [baseTxParams],
+      })) as string;
+    }
+  } else {
+    txHash = (await eth.request({
+      method: 'eth_sendTransaction',
+      params: [baseTxParams],
+    })) as string;
+  }
+
+  await api
+    .intentsDeposit({
+      txHash,
+      depositAddress: input.depositAddress,
+      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+    })
+    .catch(() => undefined);
+
+  return { txHash, sender };
+}
