@@ -820,3 +820,305 @@ export function CreatorProfileCard({
     </div>
   );
 }
+
+export interface ProfileModalProps {
+  isOpen?: boolean;
+  open?: boolean;
+  onClose: () => void;
+  address?: string | null;
+  profile?: CreatorProfileData;
+  onSave?: (next: {
+    name?: string;
+    nickname?: string | null;
+    bio?: string | null;
+    image?: string | null;
+    avatar?: string | null;
+    banner?: string | null;
+    socials?: SocialLinkRecord[];
+  }) => Promise<unknown>;
+}
+
+export function ProfileModal({
+  isOpen,
+  open,
+  onClose,
+  address,
+  profile: profileProp,
+  onSave,
+}: ProfileModalProps) {
+  const modalOpen = Boolean(isOpen ?? open);
+  const effectiveAddress = address ?? profileProp?.address ?? null;
+  const {
+    nickname: currentNickname,
+    avatar: currentAvatar,
+    bio: currentBio,
+    banner: currentBanner,
+    socials: currentSocials,
+    updateProfile,
+  } = useProfile(effectiveAddress);
+
+  const [nickname, setNickname] = useState('');
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
+  const [bio, setBio] = useState('');
+  const [socials, setSocials] = useState<SocialLinkRecord[]>([]);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [linkingStrategy, setLinkingStrategy] = useState<LinkProvider | null>(null);
+  const [linkErrorBanner, setLinkErrorBanner] = useState<string | null>(null);
+
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const bannerInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    setNickname(sanitizeCreatorNickname(currentNickname, effectiveAddress) || '');
+    setAvatar(currentAvatar || null);
+    setBanner(currentBanner || null);
+    setBio(currentBio || '');
+    setSocials(Array.isArray(currentSocials) ? currentSocials : []);
+    setLinkErrorBanner(null);
+  }, [
+    modalOpen,
+    currentNickname,
+    currentAvatar,
+    currentBanner,
+    currentBio,
+    currentSocials,
+    effectiveAddress,
+  ]);
+
+  if (!modalOpen) return null;
+
+  const handleImageUpload = async (
+    e: ChangeEvent<HTMLInputElement>,
+    kind: 'avatar' | 'banner',
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (kind === 'avatar') setUploadingAvatar(true);
+    else setUploadingBanner(true);
+    setLinkErrorBanner(null);
+
+    try {
+      const uploadedUrl = await uploadMediaImage(file, kind);
+      if (kind === 'avatar') {
+        setAvatar(uploadedUrl);
+      } else {
+        setBanner(uploadedUrl);
+      }
+    } catch (err) {
+      setLinkErrorBanner(
+        err instanceof Error
+          ? err.message
+          : `${kind === 'avatar' ? 'Avatar' : 'Banner'} upload failed`,
+      );
+    } finally {
+      if (kind === 'avatar') {
+        setUploadingAvatar(false);
+        if (avatarInputRef.current) avatarInputRef.current.value = '';
+      } else {
+        setUploadingBanner(false);
+        if (bannerInputRef.current) bannerInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemoveSocial = (platform: SocialPlatform) => {
+    setLinkErrorBanner(null);
+    setSocials((prev) => prev.filter((s) => s.platform !== platform));
+  };
+
+  const handleLinkOAuth = async (
+    provider: LinkProvider,
+    platform: SocialPlatform,
+    label: string,
+  ) => {
+    setLinkErrorBanner(null);
+    setLinkingStrategy(provider);
+    try {
+      const linked = await linkSocialOAuth(provider);
+      setSocials((prev) => [
+        ...prev.filter((s) => s.platform !== platform),
+        {
+          platform,
+          handle: linked.handle,
+          url: linked.url,
+          verified: true,
+          providerId: linked.providerId,
+        },
+      ]);
+    } catch (err) {
+      if (isAlreadyLinkedCollisionError(err)) {
+        setLinkErrorBanner('Account already linked to a different Creator.');
+      } else {
+        setLinkErrorBanner(err instanceof Error ? err.message : `Could not link ${label}`);
+      }
+    } finally {
+      setLinkingStrategy(null);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!effectiveAddress) {
+      setLinkErrorBanner('Sign in first.');
+      return;
+    }
+    setLinkErrorBanner(null);
+    setSaving(true);
+    try {
+      const saveFn = onSave ?? updateProfile;
+      await saveFn({
+        name: nickname.trim(),
+        nickname: nickname.trim() || null,
+        avatar: avatar || null,
+        image: avatar || null,
+        bio: bio.trim(),
+        banner: banner || null,
+        socials,
+      });
+      onClose();
+    } catch (err) {
+      if (isAlreadyLinkedCollisionError(err)) {
+        setLinkErrorBanner('Account already linked to a different Creator.');
+      } else if (err instanceof Error) {
+        setLinkErrorBanner(err.message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const busy = saving || uploadingAvatar || uploadingBanner || linkingStrategy !== null;
+
+  return (
+    <Modal open={modalOpen} onClose={onClose} title="EDIT CREATOR PROFILE" size="md">
+      <div className="profile-modal-body">
+        <input
+          type="file"
+          ref={bannerInputRef}
+          accept="image/*"
+          className="hidden-file-input"
+          onChange={(e) => void handleImageUpload(e, 'banner')}
+        />
+        <input
+          type="file"
+          ref={avatarInputRef}
+          accept="image/*"
+          className="hidden-file-input"
+          onChange={(e) => void handleImageUpload(e, 'avatar')}
+        />
+
+        <CreatorProfileCard
+          variant="editor-preview"
+          address={effectiveAddress}
+          nickname={nickname}
+          avatar={avatar}
+          bio={bio}
+          banner={banner}
+          socials={socials}
+          uploadingBanner={uploadingBanner}
+          uploadingAvatar={uploadingAvatar}
+          onBannerClick={() => bannerInputRef.current?.click()}
+          onBannerClear={banner ? () => setBanner(null) : undefined}
+          onAvatarClick={() => avatarInputRef.current?.click()}
+          onAvatarClear={avatar ? () => setAvatar(null) : undefined}
+        />
+
+        <div className="cyber-input-wrap">
+          <label className="cyber-input-label">NICKNAME</label>
+          <input
+            type="text"
+            aria-label="Nickname"
+            className="cyber-input-field input"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder={formatCreatorShortAddress(effectiveAddress) || 'Nickname'}
+            maxLength={32}
+          />
+        </div>
+
+        <div className="cyber-input-wrap">
+          <div className="profile-modal-label-row">
+            <label className="cyber-input-label">BIO</label>
+            <span className={`profile-modal-char-count ${bio.length >= 260 ? 'near-limit' : ''}`}>
+              {bio.length} / 280
+            </span>
+          </div>
+          <textarea
+            aria-label="Bio"
+            className="cyber-input-field textarea profile-modal-bio-input"
+            value={bio}
+            onChange={(e) => setBio(e.target.value.slice(0, 280))}
+            placeholder="Short bio..."
+            maxLength={280}
+            rows={2}
+          />
+        </div>
+
+        <div className="cyber-input-wrap">
+          <label className="cyber-input-label">LINK YOUR PROFILES</label>
+
+          {linkErrorBanner ? (
+            <div className="profile-modal-collision-alert" role="alert">
+              <AlertTriangle size={14} className="profile-modal-collision-icon" />
+              <span>{linkErrorBanner}</span>
+            </div>
+          ) : null}
+
+          <div className="profile-modal-logo-grid" role="group" aria-label="Link your profiles">
+            {LINKABLE_OAUTH_STRATEGIES.map((item) => {
+              const linkedSocial = socials.find((s) => s.platform === item.platform);
+              const isLinked = Boolean(linkedSocial);
+              const isLinking = linkingStrategy === item.provider;
+              return (
+                <Tooltip
+                  key={item.provider}
+                  title={isLinked ? `Unlink ${item.label}` : `Link ${item.label}`}
+                  description={linkedSocial?.handle}
+                  position="top"
+                >
+                  <button
+                    type="button"
+                    className={`profile-modal-logo-btn ${isLinked ? 'linked' : ''} ${isLinking ? 'linking' : ''
+                      }`.trim()}
+                    disabled={busy}
+                    onClick={() => {
+                      if (linkedSocial) {
+                        handleRemoveSocial(item.platform);
+                      } else {
+                        void handleLinkOAuth(item.provider, item.platform, item.label);
+                      }
+                    }}
+                    aria-label={isLinked ? `Unlink ${item.label}` : `Link ${item.label}`}
+                  >
+                    <SocialPlatformGlyph platform={item.platform} size={15} />
+                    {isLinked ? (
+                      <span className="profile-modal-logo-dot" aria-hidden="true" />
+                    ) : null}
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="profile-modal-actions">
+          <Button variant="ghost" size="sm" tooltip={false} onClick={onClose} disabled={busy}>
+            CANCEL
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            tooltip={false}
+            onClick={() => void handleSave()}
+            disabled={busy}
+          >
+            {saving ? 'SAVING...' : 'SAVE PROFILE'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
