@@ -275,3 +275,159 @@ export function SocialPlatformGlyph({
 export function renderSocialPlatformIcon(platform: SocialPlatform, size = 16): ReactNode {
   return <SocialPlatformGlyph platform={platform} size={size} />;
 }
+
+function isAlreadyLinkedCollisionError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return (
+    msg.includes('already linked') ||
+    msg.includes('already associated') ||
+    msg.includes('another account') ||
+    msg.includes('another user') ||
+    msg.includes('different creator') ||
+    msg.includes('already exists') ||
+    msg.includes('account already') ||
+    msg.includes('409')
+  );
+}
+
+export interface CreatorSlotProps {
+  address?: string | null;
+  fallbackName?: string | null;
+  fallbackAvatar?: string | null;
+  showExplorer?: boolean;
+  onSelectCreator?: (address: string) => void;
+  className?: string;
+}
+
+export function CreatorSlot({
+  address,
+  fallbackName,
+  fallbackAvatar,
+  showExplorer = false,
+  onSelectCreator,
+  className = '',
+}: CreatorSlotProps) {
+  const { nickname, avatar } = useProfile(address);
+
+  if (!address) {
+    return (
+      <div className={`creator-slot ${className}`.trim()}>
+        <span className="creator-slot-empty">—</span>
+      </div>
+    );
+  }
+
+  const resolvedAvatar = avatar || fallbackAvatar || null;
+  const cleanName = sanitizeCreatorNickname(nickname ?? fallbackName, address);
+  const shortAddr = formatCreatorShortAddress(address);
+  const displayName = cleanName || shortAddr || address;
+
+  return (
+    <div className={`creator-slot ${className}`.trim()}>
+      {onSelectCreator ? (
+        <Tooltip title={displayName} description="Filter by creator">
+          <button
+            type="button"
+            className="creator-slot-btn is-clickable"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectCreator(cleanName || address);
+            }}
+          >
+            {resolvedAvatar ? (
+              <img src={resolvedAvatar} alt="" className="creator-slot-avatar" />
+            ) : (
+              <span className="creator-slot-avatar-placeholder" aria-hidden="true">
+                <UserRound size={11} />
+              </span>
+            )}
+            <span className="creator-slot-name">{displayName}</span>
+          </button>
+        </Tooltip>
+      ) : (
+        <span className="creator-slot-btn">
+          {resolvedAvatar ? (
+            <img src={resolvedAvatar} alt="" className="creator-slot-avatar" />
+          ) : (
+            <span className="creator-slot-avatar-placeholder" aria-hidden="true">
+              <UserRound size={11} />
+            </span>
+          )}
+          <span className="creator-slot-name">{displayName}</span>
+        </span>
+      )}
+
+      {showExplorer ? (
+        <Tooltip title="Creator address" description={address}>
+          <a
+            href={explorerAccountUrl(address)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="creator-slot-ext"
+            aria-label="Creator address on explorer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink size={11} />
+          </a>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
+
+export function CreatorSocialBadges({
+  socials,
+  compact = true,
+  className = '',
+}: {
+  socials?: SocialLinkRecord[] | null;
+  compact?: boolean;
+  className?: string;
+}) {
+  if (!Array.isArray(socials) || socials.length === 0) return null;
+  return (
+    <div className={`creator-social-badges ${compact ? 'is-compact' : ''} ${className}`.trim()}>
+      {socials.map((item) => {
+        const meta = SOCIAL_PLATFORM_CATALOG.find((m) => m.platform === item.platform);
+        const label = meta?.label || item.platform.toUpperCase();
+        const displayHandle = item.handle || meta?.shortLabel || item.platform.toUpperCase();
+        const badgeNode = (
+          <a
+            href={item.url || '#'}
+            target={item.url ? '_blank' : undefined}
+            rel={item.url ? 'noopener noreferrer' : undefined}
+            className={`creator-social-badge-pill ${compact ? 'compact' : ''} ${item.verified ? 'verified' : ''
+              }`.trim()}
+            aria-label={`${label}: ${displayHandle}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <SocialPlatformGlyph platform={item.platform} size={compact ? 11 : 12} />
+            {!compact ? <span className="creator-social-badge-handle">{displayHandle}</span> : null}
+            {item.verified ? (
+              <span className="creator-social-verified-dot" aria-hidden="true" />
+            ) : null}
+            {!compact ? <ExternalLink size={10} className="creator-social-badge-ext" /> : null}
+          </a>
+        );
+
+        return (
+          <Tooltip
+            key={`${item.platform}:${item.handle}`}
+            title={`${label}${item.verified ? ' ✓' : ''}`}
+            description={displayHandle}
+            position="top"
+          >
+            {badgeNode}
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+export interface CreatorWalletBadge {
+  network: 'near' | 'evm' | 'svm';
+  label: string;
+  address: string;
+  explorerUrl: string;
+}
