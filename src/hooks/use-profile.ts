@@ -189,3 +189,179 @@ function looksLikeChainAddress(raw?: string | null): boolean {
     /^(?=.*[0-9A-Z])[1-9A-HJ-NP-Za-km-z]{32,48}$/.test(s)
   );
 }
+
+export function useProfile(targetAddress?: string | null) {
+  const { user, links, update } = useAuth();
+  const normalizedTarget = targetAddress?.trim() || null;
+  const targetSlug = normalizedTarget ? toUrlSlug(normalizedTarget).toLowerCase() : '';
+  const selfSlug = user?.name ? toUrlSlug(user.name).toLowerCase() : '';
+  const isSelf = Boolean(
+    user &&
+      (!normalizedTarget ||
+        user.userAddress.toLowerCase() === normalizedTarget.toLowerCase() ||
+        (Boolean(selfSlug) && selfSlug === targetSlug)),
+  );
+  const lookupKey = normalizedTarget || user?.userAddress || null;
+
+  const [remote, setRemote] = useState<CreatorProfile | null>(() =>
+    lookupKey ? remoteProfileCache.get(lookupKey.toLowerCase()) ?? null : null,
+  );
+
+  useEffect(() => {
+    if (!lookupKey || isSelf) {
+      setRemote(null);
+      return;
+    }
+    const key = lookupKey.toLowerCase();
+    const syncFromCache = () => {
+      const hit = remoteProfileCache.get(key);
+      if (hit) setRemote(hit);
+    };
+    syncFromCache();
+    window.addEventListener(PROFILE_UPDATED_EVENT, syncFromCache);
+
+    if (remoteProfileCache.has(key)) {
+      return () => {
+        window.removeEventListener(PROFILE_UPDATED_EVENT, syncFromCache);
+      };
+    }
+
+    let cancelled = false;
+    let pending = inflightProfileFetches.get(key);
+    if (!pending) {
+      pending = api
+        .creatorProfile(lookupKey)
+        .then((fetched) => {
+          remoteProfileCache.set(key, fetched);
+          if (fetched.userAddress) {
+            remoteProfileCache.set(fetched.userAddress.toLowerCase(), fetched);
+          }
+          if (fetched.name?.trim()) {
+            const slug = toUrlSlug(fetched.name).toLowerCase();
+            if (slug) remoteProfileCache.set(slug, fetched);
+          }
+          emitProfileUpdated();
+          return fetched;
+        })
+        .finally(() => {
+          inflightProfileFetches.delete(key);
+        });
+      inflightProfileFetches.set(key, pending);
+    }
+    pending
+      .then((fetched) => {
+        if (!cancelled) setRemote(fetched);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PROFILE_UPDATED_EVENT, syncFromCache);
+    };
+  }, [lookupKey, isSelf]);
+
+  const resolvedUserAddress = isSelf
+    ? user?.userAddress || null
+    : remote?.userAddress || (looksLikeChainAddress(normalizedTarget) ? normalizedTarget : null);
+
+  const wallets = useMemo<CreatorWallets | undefined>(() => {
+    if (isSelf && user?.userAddress) {
+      let evm: string | null = null;
+      let svm: string | null = null;
+      for (const item of links) {
+        if (item.status === 'failed') continue;
+        if (item.network === 'evm' && !evm) evm = item.address;
+        if (item.network === 'svm' && !svm) svm = item.address;
+      }
+      return { near: user.userAddress, evm, svm };
+    }
+    if (remote?.wallets && remote.wallets.near) {
+      return remote.wallets;
+    }
+    if (resolvedUserAddress) {
+      return { near: resolvedUserAddress, evm: null, svm: null };
+    }
+    return undefined;
+  }, [isSelf, links, remote?.wallets, resolvedUserAddress, user?.userAddress]);
+
+  const nickname = isSelf ? user?.name || null : remote?.name || null;
+  const bio = isSelf ? user?.bio || null : remote?.bio || null;
+  const avatar = isSelf ? user?.image || null : remote?.image || null;
+  const banner = isSelf ? user?.banner || null : remote?.banner || null;
+  const socials = isSelf ? user?.socials ?? [] : remote?.socials ?? [];
+
+  const profile = useMemo<CreatorProfileData>(
+    () => ({
+      address: resolvedUserAddress,
+      userAddress: resolvedUserAddress,
+      nickname,
+      bio,
+      avatar,
+      banner,
+      socials,
+      wallets,
+    }),
+    [resolvedUserAddress, nickname, bio, avatar, banner, socials, wallets],
+  );
+
+  const updateProfile = useCallback(
+    async (next: {
+      name?: string;
+      nickname?: string | null;
+      bio?: string | null;
+      image?: string | null;
+      avatar?: string | null;
+      banner?: string | null;
+      socials?: SocialLinkRecord[];
+    }) => {
+      const ownerAddress = user?.userAddress || resolvedUserAddress;
+      if (!ownerAddress) throw new Error('Sign in first.');
+      const resolvedName = (next.name ?? next.nickname ?? '').trim();
+      const resolvedImage =
+        next.image !== undefined
+          ? next.image
+          : next.avatar !== undefined
+            ? next.avatar
+            : null;
+      const updatedUser = await api.profile({
+        name: resolvedName,
+        bio: (next.bio ?? '').trim(),
+        image: resolvedImage,
+        banner: next.banner ?? null,
+        socials: next.socials ?? [],
+      });
+      update(updatedUser);
+      const cachedNext: CreatorProfile = {
+        userAddress: updatedUser.userAddress,
+        name: updatedUser.name,
+        bio: updatedUser.bio,
+        image: updatedUser.image,
+        banner: updatedUser.banner,
+        socials: updatedUser.socials,
+        wallets: wallets ?? { near: updatedUser.userAddress, evm: null, svm: null },
+      };
+      remoteProfileCache.set(updatedUser.userAddress.toLowerCase(), cachedNext);
+      if (updatedUser.name?.trim()) {
+        const slug = toUrlSlug(updatedUser.name).toLowerCase();
+        if (slug) remoteProfileCache.set(slug, cachedNext);
+      }
+      emitProfileUpdated();
+      return updatedUser;
+    },
+    [resolvedUserAddress, update, user?.userAddress, wallets],
+  );
+
+  return {
+    address: resolvedUserAddress,
+    userAddress: resolvedUserAddress,
+    nickname,
+    bio,
+    avatar,
+    banner,
+    socials,
+    wallets,
+    profile,
+    updateProfile,
+    saveProfile: updateProfile,
+  };
+}
