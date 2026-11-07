@@ -344,4 +344,88 @@ export function AccountChip() {
     };
   }, [open, liveLegs, swapStatus?.status, refreshBalance]);
 
+  async function handleApproveLimit(event: FormEvent) {
+    event.preventDefault();
+    setLimitError(null);
+    setLimitNotice(null);
+    const added = Number(limitUsd);
+    const previousApproved =
+      Number((approvedUsd || '0').replace(/[^0-9.]/g, '')) || 0;
+    try {
+      await approveLimit(limitUsd);
+      const nextTotal = previousApproved + (Number.isFinite(added) ? added : 0);
+      setLimitNotice(
+        `Added $${added.toFixed(2)} — $${nextTotal.toFixed(2)} total approved for workflows.`,
+      );
+    } catch (err) {
+      setLimitError(err instanceof Error ? err.message : 'Could not approve limit');
+    }
+  }
+
+  async function handleReclaim() {
+    setLimitError(null);
+    setLimitNotice(null);
+    try {
+      await reclaimLimit();
+      setLimitNotice('Unused workflow funds returned to your available balance.');
+    } catch (err) {
+      setLimitError(err instanceof Error ? err.message : 'Could not return unused funds');
+    }
+  }
+
+  function resetTransferFlow() {
+    setResolvedRoute(null);
+    setLiveLegs([]);
+    setLegRuntime({});
+    setManualMode(false);
+    setSwapStatus(null);
+    setMoneyError(null);
+  }
+
+  async function runMoneyPreview(promptText: string) {
+    if (!user) return;
+    const clean = promptText.trim();
+    if (!clean) return;
+    setMoneyPrompt(clean);
+    setPreviewBusy(true);
+    setMoneyError(null);
+    setLiveLegs([]);
+    setLegRuntime({});
+    setManualMode(false);
+    setSwapStatus(null);
+    try {
+      const route = await resolveIntentRoute({
+        prompt: clean,
+        dry: true,
+        links,
+      });
+      setResolvedRoute(route);
+    } catch (err) {
+      setResolvedRoute(null);
+      if (err instanceof Fault && err.code === NO_FUNDED_WALLET_CODE) {
+        setNoFundedDialogOpen(true);
+        return;
+      }
+      setMoneyError(extractWalletErrorMessage(err, 'Unable to find a route'));
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  function applyPromptTemplate(template: string, autoPreview: boolean) {
+    setMoneyPrompt(template);
+    if (autoPreview) {
+      void runMoneyPreview(template);
+    } else {
+      setResolvedRoute(null);
+      setLiveLegs([]);
+      setLegRuntime({});
+      setSwapStatus(null);
+      setMoneyError(null);
+      window.requestAnimationFrame(() => {
+        moneyInputRef.current?.focus();
+      });
+    }
+  }
+
 }
