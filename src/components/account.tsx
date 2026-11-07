@@ -428,4 +428,148 @@ export function AccountChip() {
     }
   }
 
+  async function handlePrepareOrSend(mode: 'wallet' | 'address') {
+    if (!user || !resolvedRoute) return;
+    setTransferBusy(true);
+    setMoneyError(null);
+    let anyLegSent = Object.values(legRuntime).some((r) => r.state === 'sent');
+    try {
+      let committed = resolvedRoute;
+      let legs = liveLegs;
+
+      if (legs.length === 0 || legs.some((l) => !l.quote.depositAddress)) {
+        committed = await resolveIntentRoute({
+          prompt: moneyPrompt,
+          dry: false,
+          links,
+        });
+        legs = routeLegs(committed);
+        if (legs.length === 0 || legs.some((l) => !l.quote.depositAddress)) {
+          throw new Error('Could not generate transfer address. Try again.');
+        }
+
+        const initialRuntime: Record<number, LegRuntimeState> = {};
+        legs.forEach((_, idx) => {
+          initialRuntime[idx] = { state: 'idle' };
+        });
+
+        setResolvedRoute(committed);
+        setLiveLegs(legs);
+        setLegRuntime(initialRuntime);
+        setSwapStatus({ status: 'PENDING_DEPOSIT' });
+      }
+
+      setManualMode(mode === 'address');
+
+      if (mode === 'wallet') {
+        await executeIntentRoute(committed, (idx, update) => {
+          if (update.state === 'sent') {
+            anyLegSent = true;
+          }
+          setLegRuntime((prev) => ({
+            ...prev,
+            [idx]: {
+              ...(prev[idx] ?? { state: 'idle' }),
+              state: update.state,
+              ...(update.txHash ? { txHash: update.txHash } : {}),
+              ...(update.intentHash ? { intentHash: update.intentHash } : {}),
+            },
+          }));
+        });
+        setSwapStatus((prev) =>
+          prev?.status === 'SUCCESS' ? prev : { status: 'PROCESSING' },
+        );
+        await refreshBalance();
+      }
+    } catch (err) {
+      if (!anyLegSent && mode === 'wallet') {
+        setLiveLegs([]);
+        setLegRuntime({});
+        setManualMode(false);
+        setSwapStatus(null);
+      }
+      if (err instanceof Fault && err.code === NO_FUNDED_WALLET_CODE) {
+        setNoFundedDialogOpen(true);
+        return;
+      }
+      setMoneyError(extractWalletErrorMessage(err, 'Transfer could not be completed'));
+    } finally {
+      setTransferBusy(false);
+    }
+  }
+
+  async function handleCopyDeposit(address: string) {
+    if (!address) return;
+    await navigator.clipboard.writeText(address);
+    setCopiedDeposit(address);
+    window.setTimeout(() => setCopiedDeposit(null), 1800);
+  }
+
+  async function handleCopyWallet(address: string) {
+    if (!address) return;
+    await navigator.clipboard?.writeText(address);
+    setCopiedWallet(address);
+    window.setTimeout(
+      () => setCopiedWallet((prev) => (prev === address ? null : prev)),
+      1800,
+    );
+  }
+
+  const previewLegs = resolvedRoute ? routeLegs(resolvedRoute) : [];
+  const anyOriginSent = Object.values(legRuntime).some((r) => r.state === 'sent');
+  const anyOriginSending = Object.values(legRuntime).some((r) => r.state === 'sending');
+  const isTransferSuccess = swapStatus?.status === 'SUCCESS';
+  const isTransferFailed =
+    swapStatus?.status === 'FAILED' ||
+    swapStatus?.status === 'INCOMPLETE_DEPOSIT' ||
+    swapStatus?.status === 'REFUNDED';
+  const awaitingManualDeposit =
+    manualMode &&
+    !anyOriginSent &&
+    !anyOriginSending &&
+    (!swapStatus || swapStatus.status === 'PENDING_DEPOSIT');
+
+  const activeMilestoneIndex = (() => {
+    if (isTransferSuccess) return 4; // all 4 complete
+    if (
+      swapStatus?.status === 'PROCESSING' ||
+      swapStatus?.status === 'KNOWN_DEPOSIT_TX'
+    ) {
+      return 2; // step 0 & 1 complete, step 2 ("Swap") active
+    }
+    if (anyOriginSent) {
+      return 2; // origin broadcast complete, waiting on cross-chain solver
+    }
+    if (anyOriginSending || transferBusy) {
+      return 1; // Origin Tx active
+    }
+    return 0; // Route Ready
+  })();
+
+  const transferProgressPct = isTransferSuccess
+    ? 100
+    : swapStatus?.status === 'PROCESSING' || swapStatus?.status === 'KNOWN_DEPOSIT_TX'
+      ? 82
+      : anyOriginSent
+        ? 60
+        : activeMilestoneIndex === 1
+          ? 35
+          : 20;
+
+  const destinationTx = swapStatus?.swapDetails?.destinationChainTxHashes?.[0];
+  const hasManualDepositOption = Boolean(
+    resolvedRoute &&
+    previewLegs.some(
+      (leg) => leg.depositType === 'ORIGIN_CHAIN' && leg.originWalletNetwork !== 'near',
+    ),
+  );
+
+  const primaryActionLabel = (() => {
+    if (!resolvedRoute) return 'Send';
+    if (resolvedRoute.action === 'withdraw') return 'Withdraw Now';
+    if (resolvedRoute.action === 'swap') return 'Swap Now';
+    const outAmt = resolvedRoute.totalOutFormatted || resolvedRoute.quote.amountOutFormatted;
+    return outAmt ? `Fund ~$${outAmt}` : 'Fund Account';
+  })();
+
 }
