@@ -431,3 +431,392 @@ export interface CreatorWalletBadge {
   address: string;
   explorerUrl: string;
 }
+
+export interface CreatorProfileCardProps {
+  variant?: 'mypage' | 'creator' | 'account' | 'connector' | 'preview' | 'editor-preview';
+  profile?: CreatorProfileData;
+  address?: string | null;
+  wallets?: readonly CreatorWalletBadge[];
+  nickname?: string | null;
+  avatar?: string | null;
+  bio?: string | null;
+  banner?: string | null;
+  socials?: SocialLinkRecord[] | null;
+  explorerUrl?: string | null;
+  isOwner?: boolean;
+  compact?: boolean;
+  onEdit?: () => void;
+  onSignIn?: () => void;
+  onPreview?: () => void;
+  onUploadBanner?: () => void;
+  onRemoveBanner?: () => void;
+  onUploadAvatar?: () => void;
+  onRemoveAvatar?: () => void;
+  onBannerClick?: () => void;
+  onBannerClear?: () => void;
+  onAvatarClick?: () => void;
+  onAvatarClear?: () => void;
+  uploadingBanner?: boolean;
+  uploadingAvatar?: boolean;
+  statsSlot?: ReactNode;
+  rightSlot?: ReactNode;
+  className?: string;
+}
+
+export function CreatorProfileCard({
+  variant = 'mypage',
+  profile,
+  address: addressProp,
+  wallets,
+  nickname: nicknameProp,
+  avatar: avatarProp,
+  bio: bioProp,
+  banner: bannerProp,
+  socials: socialsProp,
+  explorerUrl: explorerUrlProp,
+  compact = false,
+  onEdit,
+  onSignIn,
+  onPreview,
+  onUploadBanner,
+  onRemoveBanner,
+  onUploadAvatar,
+  onRemoveAvatar,
+  onBannerClick,
+  onBannerClear,
+  onAvatarClick,
+  onAvatarClear,
+  uploadingBanner = false,
+  uploadingAvatar = false,
+  statsSlot,
+  rightSlot,
+  className = '',
+}: CreatorProfileCardProps) {
+  const [copied, setCopied] = useState(false);
+  const [copiedWalletKey, setCopiedWalletKey] = useState<string | null>(null);
+  const address = addressProp ?? profile?.address ?? null;
+  const nickname = nicknameProp !== undefined ? nicknameProp : (profile?.nickname ?? null);
+  const avatar = avatarProp !== undefined ? avatarProp : (profile?.avatar ?? null);
+  const bio = bioProp !== undefined ? bioProp : (profile?.bio ?? null);
+  const banner = bannerProp !== undefined ? bannerProp : (profile?.banner ?? null);
+  const socials = socialsProp !== undefined ? socialsProp : (profile?.socials ?? []);
+
+  const handleBannerUpload = onBannerClick ?? onUploadBanner;
+  const handleBannerRemove = onBannerClear ?? onRemoveBanner;
+  const handleAvatarUpload = onAvatarClick ?? onUploadAvatar;
+  const handleAvatarRemove = onAvatarClear ?? onRemoveAvatar;
+
+  const cleanName = sanitizeCreatorNickname(nickname, address);
+  const shortAddr = formatCreatorShortAddress(address);
+  const displayTitle = cleanName || shortAddr || address || '';
+
+  const resolvedWallets: CreatorWalletBadge[] = (() => {
+    if (Array.isArray(wallets) && wallets.length > 0) return wallets;
+    if (
+      variant === 'account' ||
+      variant === 'connector' ||
+      variant === 'editor-preview'
+    ) {
+      return [];
+    }
+    const nearAddr = profile?.wallets?.near || address || '';
+    if (!nearAddr) return [];
+    const list: CreatorWalletBadge[] = [
+      {
+        network: 'near',
+        label: 'NEAR',
+        address: nearAddr,
+        explorerUrl: explorerAccountUrl(nearAddr),
+      },
+    ];
+    if (profile?.wallets?.evm) {
+      list.push({
+        network: 'evm',
+        label: 'EVM',
+        address: profile.wallets.evm,
+        explorerUrl: externalWalletExplorerUrl('evm', profile.wallets.evm),
+      });
+    }
+    if (profile?.wallets?.svm) {
+      list.push({
+        network: 'svm',
+        label: 'SVM',
+        address: profile.wallets.svm,
+        explorerUrl: externalWalletExplorerUrl('svm', profile.wallets.svm),
+      });
+    }
+    return list;
+  })();
+
+  const showWalletsRow =
+    variant !== 'account' &&
+    variant !== 'connector' &&
+    variant !== 'editor-preview' &&
+    resolvedWallets.length > 0;
+  const nearWallet = showWalletsRow
+    ? (resolvedWallets.find((w) => w.network === 'near') ?? null)
+    : null;
+  const secondaryWallets = showWalletsRow
+    ? resolvedWallets.filter((w) => w.network !== 'near')
+    : [];
+  const explorerUrl =
+    !showWalletsRow
+      ? explorerUrlProp ??
+      (variant !== 'account' &&
+        variant !== 'connector' &&
+        variant !== 'editor-preview' &&
+        address
+        ? explorerAccountUrl(address)
+        : null)
+      : null;
+  const slotNode = rightSlot ?? statsSlot;
+  const showBannerActions =
+    variant !== 'editor-preview' && Boolean(onPreview || (onEdit && address));
+
+  function copyAddress(e: MouseEvent) {
+    e.stopPropagation();
+    if (!address) return;
+    void navigator.clipboard?.writeText(address);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  function copyWalletBadge(e: MouseEvent, key: string, targetAddress: string) {
+    e.stopPropagation();
+    if (!targetAddress) return;
+    void navigator.clipboard?.writeText(targetAddress);
+    setCopiedWalletKey(key);
+    window.setTimeout(
+      () => setCopiedWalletKey((prev) => (prev === key ? null : prev)),
+      1800,
+    );
+  }
+
+  function renderWalletChip(
+    w: CreatorWalletBadge,
+    options?: { className?: string },
+  ) {
+    const key = `${w.network}:${w.address}`;
+    const isThisCopied = copiedWalletKey === key;
+    const formatted = shortHash(w.address, 6, 4);
+    const logoSrc = NETWORK_LOGO_BY_CHAIN[w.network];
+    return (
+      <span
+        key={`${key}:${options?.className ?? 'default'}`}
+        className={`creator-wallet-chip is-${w.network} ${options?.className ?? ''}`.trim()}
+      >
+        <img
+          src={logoSrc}
+          alt={w.label}
+          className={`creator-wallet-net-logo is-${w.network}`}
+        />
+        <span className="creator-wallet-addr">{formatted}</span>
+        <Tooltip
+          label={isThisCopied ? 'Copied' : `Copy ${w.label} wallet`}
+          description={w.address}
+        >
+          <button
+            type="button"
+            className="creator-wallet-icon-btn creator-wallet-copy-btn"
+            onClick={(e) => copyWalletBadge(e, key, w.address)}
+            aria-label={`Copy ${w.label} wallet address`}
+          >
+            {isThisCopied ? <Check size={11} /> : <Copy size={11} />}
+          </button>
+        </Tooltip>
+        <Tooltip label={`View ${w.label} on Explorer`} description={w.address}>
+          <a
+            href={w.explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="creator-wallet-icon-btn"
+            aria-label={`View ${w.label} wallet on explorer`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink size={11} />
+          </a>
+        </Tooltip>
+      </span>
+    );
+  }
+
+  const bannerHeaderActions = showBannerActions ? (
+    <>
+      {onPreview ? (
+        <Tooltip label="Public Profile" description="Open your public creator page">
+          <button
+            type="button"
+            className="media-corner-btn media-corner-btn--action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreview();
+            }}
+            aria-label="Public profile"
+          >
+            <Globe size={12} aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : null}
+      {onEdit && address ? (
+        <Tooltip label="Edit Profile">
+          <button
+            type="button"
+            className="media-corner-btn media-corner-btn--action"
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit();
+            }}
+            aria-label="Edit profile"
+          >
+            <Pencil size={12} aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : null}
+    </>
+  ) : undefined;
+
+  return (
+    <div
+      className={`creator-card stealth-glass variant-${variant} ${variant === 'editor-preview' ? 'creator-card--editor-preview' : ''
+        } ${compact ? 'is-compact' : ''} ${className}`.trim()}
+    >
+      <BannerMediaFrame
+        variant="card-header"
+        compact={compact}
+        src={banner}
+        uploading={uploadingBanner}
+        onClickUpload={handleBannerUpload}
+        onRemove={banner ? handleBannerRemove : undefined}
+        headerActions={bannerHeaderActions}
+      />
+
+      <div className="creator-card-body">
+        <AvatarMediaFrame
+          className="creator-card-avatar-wrap"
+          src={avatar}
+          alt={displayTitle}
+          uploading={uploadingAvatar}
+          onClickUpload={handleAvatarUpload}
+          onRemove={avatar ? handleAvatarRemove : undefined}
+        />
+
+        <div className="creator-card-main">
+          <div className="creator-card-head">
+            <div className="creator-card-identity">
+              {displayTitle ? (
+                <strong className="creator-card-name">{displayTitle}</strong>
+              ) : onSignIn ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-xs"
+                  onClick={onSignIn}
+                >
+                  Sign in
+                </button>
+              ) : null}
+
+              {showWalletsRow ? (
+                <div className="creator-wallets-row" aria-label="Connected NEAR account">
+                  {nearWallet ? (
+                    <>
+                      {renderWalletChip(nearWallet, { className: 'creator-wallet-desktop-only' })}
+                      <Tooltip
+                        title="NEAR Wallet"
+                        description={nearWallet.address}
+                        position="top"
+                      >
+                        <a
+                          href={nearWallet.explorerUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="creator-wallet-mobile-near"
+                          aria-label="View NEAR wallet on explorer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <img
+                            src={NETWORK_LOGO_BY_CHAIN.near}
+                            alt="NEAR"
+                            className="creator-wallet-net-logo is-near"
+                          />
+                          <ExternalLink size={10} />
+                        </a>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                </div>
+              ) : variant !== 'account' &&
+                variant !== 'connector' &&
+                variant !== 'editor-preview' &&
+                address ? (
+                <Tooltip label={copied ? 'Copied' : 'Copy account address'} description={address}>
+                  <button
+                    type="button"
+                    className="creator-wallet-pill creator-wallet-desktop-only"
+                    onClick={copyAddress}
+                    aria-label="Copy account address"
+                  >
+                    {cleanName && shortAddr ? <span>{shortAddr}</span> : null}
+                    {copied ? <Check size={11} /> : <Copy size={11} />}
+                  </button>
+                </Tooltip>
+              ) : null}
+
+              {explorerUrl ? (
+                <Tooltip label="View on Explorer" description={address ?? undefined}>
+                  <a
+                    href={explorerUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="icon-btn btn-xs"
+                    aria-label="View on explorer"
+                  >
+                    <ExternalLink size={12} />
+                  </a>
+                </Tooltip>
+              ) : null}
+            </div>
+
+            {slotNode ? <div className="creator-card-stats">{slotNode}</div> : null}
+          </div>
+
+          {bio?.trim() ? (
+            <p className="creator-card-bio">{bio.trim()}</p>
+          ) : onEdit && address ? (
+            <button type="button" className="creator-card-bio-empty" onClick={onEdit}>
+              Add bio...
+            </button>
+          ) : null}
+
+          {(socials?.length ?? 0) > 0 || secondaryWallets.length > 0 ? (
+            <div className="creator-card-bottom-links">
+              <CreatorSocialBadges socials={socials} compact className="creator-socials" />
+              {secondaryWallets.map((w) => (
+                <Tooltip
+                  key={`${w.network}:${w.address.toLowerCase()}`}
+                  title={`${w.label} Wallet`}
+                  description={w.address}
+                  position="top"
+                >
+                  <a
+                    href={w.explorerUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="creator-social-badge-pill compact"
+                    aria-label={`View ${w.label} wallet on explorer`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <img
+                      src={NETWORK_LOGO_BY_CHAIN[w.network]}
+                      alt={w.label}
+                      className={`creator-wallet-net-logo is-${w.network}`}
+                    />
+                  </a>
+                </Tooltip>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
