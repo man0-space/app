@@ -572,4 +572,856 @@ export function AccountChip() {
     return outAmt ? `Fund ~$${outAmt}` : 'Fund Account';
   })();
 
+  return (
+    <>
+      <Tooltip
+        label={user ? `Account & Balance (${totalUsd})` : 'Sign in'}
+        description={
+          user
+            ? `${availableUsd} available · ${approvedUsd} approved for workflows`
+            : 'Sign in with passkey, email, or social'
+        }
+      >
+        <button
+          type="button"
+          aria-label={user ? `Account ${handleLabel} balance ${totalUsd}` : 'Sign in'}
+          className={`account-chip stealth-glass ${user ? 'is-connected' : ''}`.trim()}
+          onClick={() => {
+            clear();
+            setOpen(true);
+          }}
+        >
+          {busy ? (
+            <LoaderCircle size={14} className="spin" />
+          ) : user ? (
+            <>
+              <span className="account-chip-gem accent-gold" aria-hidden="true">
+                ◆
+              </span>
+              <span className="account-chip-balance">
+                {balanceLoading ? '...' : totalUsd}
+              </span>
+              <span className="account-chip-sep" aria-hidden="true">
+                ·
+              </span>
+              {avatar || user.image ? (
+                <span className="account-chip-avatar">
+                  <img src={(avatar || user.image)!} alt="" />
+                </span>
+              ) : null}
+              <span className="account-chip-label">{handleLabel}</span>
+            </>
+          ) : (
+            <>
+              <UserRound size={14} />
+              <span className="account-chip-label">Sign in</span>
+            </>
+          )}
+        </button>
+      </Tooltip>
+
+      {open && user ? (
+        <Modal
+          title="Account"
+          close={() => setOpen(false)}
+          size="md"
+          headerActions={
+            <Button
+              icon={<RefreshCw size={13} className={balanceLoading ? 'spin' : ''} />}
+              tooltip="Refresh balance"
+              size="xs"
+              onClick={() => {
+                void refreshUser().catch(() => undefined);
+                void refreshBalance();
+              }}
+            />
+          }
+        >
+          <div className="account-panel">
+            <CreatorProfileCard
+              variant="account"
+              compact
+              address={user.userAddress}
+              nickname={nickname || user.name}
+              avatar={avatar || user.image}
+              bio={bio || user.bio}
+              banner={banner || user.banner}
+              socials={socials.length > 0 ? socials : user.socials}
+              onEdit={() => {
+                setOpen(false);
+                setEditingProfile(true);
+              }}
+            />
+
+            <div ref={pocketsRef} className="account-pockets" aria-label="Account sections">
+              <div className="account-wallet-row" aria-label="Primary NEAR wallet">
+                <span className="account-pocket-lead">
+                  <Wallet size={13} aria-hidden="true" />
+                  <span className="account-pocket-title">NEAR</span>
+                </span>
+                <div className="account-wallet-controls">
+                  <span className="account-pocket-badge is-connected">
+                    <span className="account-pocket-dot" aria-hidden="true" />
+                    {shortHash(user.userAddress, 6, 4)}
+                  </span>
+                  <Tooltip
+                    label={copiedWallet === user.userAddress ? 'Copied' : 'Copy NEAR address'}
+                    description={user.userAddress}
+                  >
+                    <button
+                      type="button"
+                      className="account-wallet-icon-btn"
+                      onClick={() => void handleCopyWallet(user.userAddress)}
+                      aria-label="Copy NEAR wallet address"
+                    >
+                      {copiedWallet === user.userAddress ? (
+                        <Check size={12} />
+                      ) : (
+                        <Copy size={12} />
+                      )}
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="View on Explorer" description={user.userAddress}>
+                    <a
+                      href={explorerAccountUrl(user.userAddress)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="account-wallet-icon-btn"
+                      aria-label="View NEAR wallet on explorer"
+                    >
+                      <ExternalLink size={12} />
+                    </a>
+                  </Tooltip>
+                </div>
+              </div>
+
+              {(
+                [
+                  { id: 'evm' as const, label: 'EVM', items: evmLinks },
+                  { id: 'svm' as const, label: 'SVM', items: svmLinks },
+                ] as const
+              ).map((net) => (
+                <details key={net.id} name={POCKET_GROUP} className="account-pocket">
+                  <summary className="account-pocket-summary">
+                    <span className="account-pocket-lead">
+                      <ChevronRight size={13} className="account-pocket-chevron" aria-hidden="true" />
+                      <Wallet size={13} aria-hidden="true" />
+                      <span className="account-pocket-title">{net.label}</span>
+                    </span>
+                    <span className="account-pocket-meta">
+                      {net.items.length === 1 ? (
+                        <span className="account-pocket-badge is-connected">
+                          <span className="account-pocket-dot" aria-hidden="true" />
+                          {shortHash(net.items[0]!.address, 6, 4)}
+                        </span>
+                      ) : net.items.length > 1 ? (
+                        <span className="account-pocket-badge is-connected">
+                          <span className="account-pocket-dot" aria-hidden="true" />
+                          {net.items.length} linked
+                        </span>
+                      ) : (
+                        <span className="account-pocket-badge">None</span>
+                      )}
+                    </span>
+                  </summary>
+                  <div className="account-pocket-body">
+                    {net.items.length > 0 ? (
+                      <div className="account-links-row">
+                        {net.items.map((item) => {
+                          const itemCopied = copiedWallet === item.address;
+                          return (
+                            <div key={item.id} className="account-link-item">
+                              <code>{shortHash(item.address, 6, 4)}</code>
+                              <div className="account-link-actions">
+                                <span className="status-pill is-ready">Attached</span>
+                                <Tooltip
+                                  label={itemCopied ? 'Copied' : `Copy ${net.label} address`}
+                                  description={item.address}
+                                >
+                                  <button
+                                    type="button"
+                                    className="account-wallet-icon-btn"
+                                    onClick={() => void handleCopyWallet(item.address)}
+                                    aria-label={`Copy ${net.label} wallet address`}
+                                  >
+                                    {itemCopied ? <Check size={11} /> : <Copy size={11} />}
+                                  </button>
+                                </Tooltip>
+                                <Tooltip
+                                  label={`View ${net.label} on Explorer`}
+                                  description={item.address}
+                                >
+                                  <a
+                                    href={externalWalletExplorerUrl(net.id, item.address)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="account-wallet-icon-btn"
+                                    aria-label={`View ${net.label} wallet on explorer`}
+                                  >
+                                    <ExternalLink size={11} />
+                                  </a>
+                                </Tooltip>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+
+                    <div className="account-pocket-actions">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        tooltip={false}
+                        disabled={linkBusy}
+                        onClick={() => void linkWallet(net.id)}
+                      >
+                        + Attach {net.label}
+                      </Button>
+                    </div>
+
+                    {linkError ? (
+                      <p className="form-error" role="alert">
+                        {linkError}
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
+              ))}
+
+              <details name={POCKET_GROUP} className="account-pocket">
+                <summary className="account-pocket-summary">
+                  <span className="account-pocket-lead">
+                    <ChevronRight size={13} className="account-pocket-chevron" aria-hidden="true" />
+                    <span className="account-pocket-title">Session</span>
+                  </span>
+                  <span className="account-pocket-meta">
+                    <span className="account-pocket-stat">{availableUsd} available</span>
+                    <span className="account-chip-sep" aria-hidden="true">
+                      ·
+                    </span>
+                    <span
+                      className={`account-pocket-stat ${hasApprovedLimit ? 'accent-gold' : ''}`}
+                    >
+                      {approvedUsd} limit
+                    </span>
+                  </span>
+                </summary>
+                <div className="account-pocket-body">
+                  <div className="stat-card-grid">
+                    <div className="stat-box">
+                      <span className="stat-label">Available</span>
+                      <span className="stat-val">{availableUsd}</span>
+                    </div>
+                    <div className="stat-box">
+                      <span className="stat-label">Approved</span>
+                      <span className={`stat-val ${hasApprovedLimit ? 'accent-gold' : ''}`}>
+                        {approvedUsd}
+                      </span>
+                    </div>
+                  </div>
+
+                  <form className="account-limit-row" onSubmit={handleApproveLimit}>
+                    <div className="preset-row">
+                      {LIMIT_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className={`chip-btn ${limitUsd === preset ? 'is-active' : ''}`}
+                          onClick={() => {
+                            limitTouchedRef.current = true;
+                            setLimitUsd(preset);
+                          }}
+                        >
+                          ${preset}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="account-limit-controls">
+                      <label htmlFor={limitInputId} className="visually-hidden">
+                        Workflow spending limit in USD
+                      </label>
+                      <input
+                        id={limitInputId}
+                        type="number"
+                        step="0.01"
+                        min="0.05"
+                        className="input account-limit-input"
+                        value={limitUsd}
+                        onChange={(event) => {
+                          limitTouchedRef.current = true;
+                          setLimitUsd(event.target.value);
+                        }}
+                        placeholder="5.00"
+                      />
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        size="sm"
+                        tooltip={false}
+                        icon={
+                          approving ? (
+                            <LoaderCircle size={13} className="spin" />
+                          ) : (
+                            <Check size={13} />
+                          )
+                        }
+                        disabled={approving}
+                      >
+                        Approve
+                      </Button>
+                      {hasApprovedLimit ? (
+                        <Button
+                          icon={<RotateCcw size={13} />}
+                          tooltip="Reclaim unused funds"
+                          size="sm"
+                          disabled={approving}
+                          onClick={() => void handleReclaim()}
+                        />
+                      ) : null}
+                    </div>
+                  </form>
+
+                  {approving ? (
+                    <div className="onchain-progress-card">
+                      <progress
+                        className="onchain-progress-track"
+                        max={100}
+                        value={sessionStepProgress(approvalStep)}
+                        aria-label="Session limit on-chain settlement"
+                      />
+                      <div className="onchain-progress-status" role="status" aria-live="polite">
+                        <span>{formatSessionStepLabel(approvalStep)}</span>
+                        <span className="wf-meta-text">{sessionStepProgress(approvalStep)}%</span>
+                      </div>
+                    </div>
+                  ) : limitNotice ? (
+                    <div className="onchain-progress-status" role="status" aria-live="polite">
+                      <span className="account-notice">{limitNotice}</span>
+                      {lastApprovalTxUrl ? (
+                        <a
+                          href={lastApprovalTxUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-ghost btn-xs"
+                        >
+                          <span>Receipt</span>
+                          <ExternalLink size={11} />
+                        </a>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {limitError || balanceError ? (
+                    <p className="form-error" role="alert">
+                      {limitError || balanceError}
+                    </p>
+                  ) : null}
+                </div>
+              </details>
+
+              <details ref={fundPocketRef} name={POCKET_GROUP} className="account-pocket">
+                <summary className="account-pocket-summary">
+                  <span className="account-pocket-lead">
+                    <ChevronRight size={13} className="account-pocket-chevron" aria-hidden="true" />
+                    <span className="account-pocket-title">Fund / Swap</span>
+                  </span>
+                  {liveLegs.length > 0 ? (
+                    <span className="account-pocket-meta">
+                      <span
+                        className={`status-pill ${isTransferSuccess ? 'is-ready' : ''}`}
+                      >
+                        {isTransferSuccess
+                          ? 'Credited'
+                          : awaitingManualDeposit
+                            ? 'Awaiting Deposit'
+                            : `${transferProgressPct}%`}
+                      </span>
+                    </span>
+                  ) : null}
+                </summary>
+                <div className="account-pocket-body">
+                  <div className="fund-quick-header">
+                    <div className="preset-row" role="group" aria-label="Quick transfer presets">
+                      <button
+                        type="button"
+                        className="chip-btn"
+                        disabled={previewBusy || transferBusy}
+                        onClick={() => applyPromptTemplate('Deposit $2', true)}
+                      >
+                        +$2
+                      </button>
+                      <button
+                        type="button"
+                        className="chip-btn"
+                        disabled={previewBusy || transferBusy}
+                        onClick={() => applyPromptTemplate('Deposit $5', true)}
+                      >
+                        +$5
+                      </button>
+                      <button
+                        type="button"
+                        className="chip-btn"
+                        disabled={previewBusy || transferBusy}
+                        onClick={() => applyPromptTemplate('Deposit $10', true)}
+                      >
+                        +$10
+                      </button>
+                      <button
+                        type="button"
+                        className="chip-btn"
+                        disabled={previewBusy || transferBusy}
+                        onClick={() =>
+                          applyPromptTemplate(`Swap $${smartAccountChipUsd} to NEAR`, true)
+                        }
+                      >
+                        Swap
+                      </button>
+                      <button
+                        type="button"
+                        className="chip-btn"
+                        disabled={previewBusy || transferBusy}
+                        onClick={() =>
+                          applyPromptTemplate(
+                            svmLinks.length > 0 && evmLinks.length === 0
+                              ? `Withdraw $${smartAccountChipUsd} to Solana`
+                              : `Withdraw $${smartAccountChipUsd} to my EVM wallet`,
+                            true,
+                          )
+                        }
+                      >
+                        Withdraw
+                      </button>
+                    </div>
+                    <span className="fund-sources-hint">
+                      {links.length > 0
+                        ? `Sources: ${[
+                          ...evmLinks.map((l) => `EVM ${shortHash(l.address, 4, 4)}`),
+                          ...svmLinks.map((l) => `SVM ${shortHash(l.address, 4, 4)}`),
+                        ].join(' · ')}`
+                        : 'Attach EVM or SVM above to fund from external chains'}
+                    </span>
+                  </div>
+
+                  <form
+                    className="account-money-bar"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void runMoneyPreview(moneyPrompt);
+                    }}
+                  >
+                    <label htmlFor={moneyInputId} className="visually-hidden">
+                      Transfer amount and network
+                    </label>
+                    <input
+                      ref={moneyInputRef}
+                      id={moneyInputId}
+                      type="text"
+                      className="input"
+                      value={moneyPrompt}
+                      onChange={(event) => setMoneyPrompt(event.target.value)}
+                      placeholder="Deposit $5, Swap $1 to SOL, or Withdraw $2…"
+                    />
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      icon={
+                        previewBusy ? (
+                          <LoaderCircle size={13} className="spin" />
+                        ) : (
+                          <ArrowRight size={13} />
+                        )
+                      }
+                      tooltip="Find route"
+                      disabled={previewBusy || transferBusy || !moneyPrompt.trim()}
+                    />
+                  </form>
+
+                  {previewBusy ? (
+                    <div className="onchain-progress-card">
+                      <progress
+                        className="onchain-progress-track"
+                        aria-label="Scanning balances and finding optimal route"
+                      />
+                      <div className="onchain-progress-status" role="status" aria-live="polite">
+                        <span>Scanning balances &amp; finding optimal route…</span>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {resolvedRoute && !previewBusy ? (
+                    <div className="quote-box">
+                      <div className="route-ownership-list">
+                        {previewLegs.map((leg, idx) => (
+                          <div
+                            key={`${leg.originToken.assetId}-${idx}`}
+                            className="route-ownership-row"
+                          >
+                            <span className="route-ownership-tag">From</span>
+                            <span className="route-ownership-party">
+                              <strong>{describeOriginOwner(leg, handleLabel)}</strong>
+                              <span className="wf-meta-text"> · {leg.originChainLabel}</span>
+                            </span>
+                            <span className="route-ownership-amount">{leg.displayAmount}</span>
+                          </div>
+                        ))}
+                        <div className="route-ownership-row is-destination">
+                          <span className="route-ownership-tag is-to">To</span>
+                          <span className="route-ownership-party">
+                            <strong>{describeDestinationOwner(resolvedRoute, handleLabel)}</strong>
+                            <span className="wf-meta-text">
+                              {' '}
+                              · {resolvedRoute.destinationChainLabel} (~
+                              {resolvedRoute.quote.timeEstimate || 25}s)
+                            </span>
+                          </span>
+                          <span className="route-ownership-amount accent-gold">
+                            ~
+                            {resolvedRoute.totalOutFormatted ||
+                              resolvedRoute.quote.amountOutFormatted}{' '}
+                            {resolvedRoute.action === 'deposit'
+                              ? 'USD'
+                              : resolvedRoute.destinationToken.symbol}
+                          </span>
+                        </div>
+                      </div>
+
+                      {liveLegs.length === 0 ? (
+                        <div className="account-quote-actions">
+                          {canAutoSendOrigin(resolvedRoute) ? (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              tooltip={false}
+                              icon={
+                                transferBusy ? (
+                                  <LoaderCircle size={13} className="spin" />
+                                ) : (
+                                  <Send size={13} />
+                                )
+                              }
+                              disabled={transferBusy}
+                              onClick={() => void handlePrepareOrSend('wallet')}
+                            >
+                              {primaryActionLabel}
+                            </Button>
+                          ) : null}
+                          {hasManualDepositOption ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              tooltip={false}
+                              icon={<Copy size={13} />}
+                              disabled={transferBusy}
+                              onClick={() => void handlePrepareOrSend('address')}
+                            >
+                              Manual Deposit Address
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="account-transfer-live">
+                          {awaitingManualDeposit ? (
+                            <div className="onchain-progress-card">
+                              <progress
+                                className="onchain-progress-track"
+                                aria-label="Listening for manual on-chain deposit"
+                              />
+                              <div
+                                className="onchain-progress-status"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                <span>
+                                  Send exact amount to the bridge address below — settlement starts
+                                  automatically once detected.
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="onchain-progress-card">
+                              <progress
+                                className={`onchain-progress-track ${isTransferSuccess
+                                  ? 'is-complete'
+                                  : isTransferFailed
+                                    ? 'is-failed'
+                                    : ''
+                                  }`.trim()}
+                                max={100}
+                                value={transferProgressPct}
+                                aria-label="On-chain transfer progress"
+                              />
+                              <ol className="onchain-milestones" aria-label="Transfer milestones">
+                                {TRANSFER_MILESTONES.map((step, idx) => {
+                                  const state =
+                                    idx < activeMilestoneIndex
+                                      ? 'done'
+                                      : idx === activeMilestoneIndex
+                                        ? isTransferFailed
+                                          ? 'failed'
+                                          : 'active'
+                                        : 'pending';
+                                  return (
+                                    <li
+                                      key={step.id}
+                                      className={`onchain-milestone is-${state}`}
+                                    >
+                                      <span className="onchain-milestone-dot" aria-hidden="true">
+                                        {state === 'done' ? <Check size={9} /> : null}
+                                      </span>
+                                      <span className="onchain-milestone-label">{step.label}</span>
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            </div>
+                          )}
+
+                          <div className="onchain-legs-list">
+                            {liveLegs.map((leg, idx) => {
+                              const rt = legRuntime[idx];
+                              const originTxUrl = buildOriginTxUrl(leg, rt);
+                              const legDestTx =
+                                rt?.status?.swapDetails?.destinationChainTxHashes?.[0]?.explorerUrl;
+                              const showManualBox =
+                                (manualMode || !canAutoSendOrigin(resolvedRoute)) &&
+                                leg.depositType === 'ORIGIN_CHAIN' &&
+                                leg.originWalletNetwork !== 'near' &&
+                                Boolean(leg.quote.depositAddress);
+
+                              return (
+                                <div
+                                  key={leg.quote.depositAddress ?? idx}
+                                  className="onchain-leg-item"
+                                >
+                                  <div className="onchain-leg-row">
+                                    <span className="onchain-leg-desc">
+                                      {leg.displayAmount} · {leg.originChainLabel}
+                                    </span>
+                                    <span className="onchain-leg-links">
+                                      {originTxUrl ? (
+                                        <a
+                                          href={originTxUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="btn btn-ghost btn-xs"
+                                        >
+                                          <span>Tx</span>
+                                          <ExternalLink size={10} />
+                                        </a>
+                                      ) : null}
+                                      {legDestTx ? (
+                                        <a
+                                          href={legDestTx}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="btn btn-ghost btn-xs"
+                                        >
+                                          <span>Receipt</span>
+                                          <ExternalLink size={10} />
+                                        </a>
+                                      ) : null}
+                                    </span>
+                                  </div>
+
+                                  {showManualBox && leg.quote.depositAddress ? (
+                                    <div className="manual-deposit-wrap">
+                                      <span className="manual-deposit-caption">
+                                        One-time bridge address on {leg.originChainLabel} — send
+                                        exact {leg.displayAmount}:
+                                      </span>
+                                      <div className="copy-bar">
+                                        <code className="copy-bar-code">
+                                          {leg.quote.depositAddress}
+                                          {leg.quote.depositMemo
+                                            ? ` (Memo: ${leg.quote.depositMemo})`
+                                            : ''}
+                                        </code>
+                                        <Button
+                                          icon={
+                                            copiedDeposit === leg.quote.depositAddress ? (
+                                              <Check size={13} />
+                                            ) : (
+                                              <Copy size={13} />
+                                            )
+                                          }
+                                          tooltip={
+                                            copiedDeposit === leg.quote.depositAddress
+                                              ? 'Copied'
+                                              : 'Copy deposit address'
+                                          }
+                                          size="xs"
+                                          onClick={() =>
+                                            void handleCopyDeposit(leg.quote.depositAddress!)
+                                          }
+                                        />
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div
+                            className="onchain-progress-status"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            <span
+                              className={`status-pill ${isTransferSuccess ? 'is-ready' : ''}`}
+                            >
+                              {formatSwapState(
+                                swapStatus?.status,
+                                anyOriginSent,
+                                anyOriginSending,
+                              )}
+                            </span>
+                            <span className="onchain-leg-links">
+                              {destinationTx?.explorerUrl && liveLegs.length === 1 ? null : destinationTx?.explorerUrl ? (
+                                <a
+                                  href={destinationTx.explorerUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="btn btn-ghost btn-xs"
+                                >
+                                  <span>Settlement</span>
+                                  <ExternalLink size={11} />
+                                </a>
+                              ) : null}
+                              {awaitingManualDeposit && canAutoSendOrigin(resolvedRoute) ? (
+                                <Button
+                                  variant="primary"
+                                  size="xs"
+                                  tooltip={false}
+                                  icon={
+                                    transferBusy ? (
+                                      <LoaderCircle size={11} className="spin" />
+                                    ) : (
+                                      <Send size={11} />
+                                    )
+                                  }
+                                  disabled={transferBusy}
+                                  onClick={() => void handlePrepareOrSend('wallet')}
+                                >
+                                  {primaryActionLabel}
+                                </Button>
+                              ) : null}
+                              {isTransferSuccess || isTransferFailed || manualMode ? (
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  tooltip={false}
+                                  onClick={resetTransferFlow}
+                                >
+                                  New Transfer
+                                </Button>
+                              ) : null}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {moneyError ? (
+                    <p className="form-error" role="alert">
+                      {moneyError}
+                    </p>
+                  ) : null}
+                </div>
+              </details>
+            </div>
+
+            <footer className="account-sheet-footer">
+              <Button
+                variant="ghost"
+                size="xs"
+                tooltip={false}
+                icon={<ShieldCheck size={13} aria-hidden="true" />}
+                onClick={() => {
+                  setOpen(false);
+                  setShowTerms(true);
+                }}
+              >
+                Terms
+              </Button>
+              <Button
+                variant="danger"
+                size="xs"
+                tooltip={false}
+                icon={<LogOut size={13} aria-hidden="true" />}
+                disabled={busy}
+                onClick={() => {
+                  setOpen(false);
+                  void logout().catch(() => { });
+                }}
+              >
+                Sign Out
+              </Button>
+            </footer>
+          </div>
+        </Modal>
+      ) : null}
+
+      {noFundedDialogOpen ? (
+        <Modal
+          title="Attach an External Wallet"
+          size="sm"
+          close={() => setNoFundedDialogOpen(false)}
+        >
+          <div className="account-panel">
+            <p>{NO_FUNDED_WALLET_MESSAGE}</p>
+            <div className="account-quote-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={linkBusy}
+                onClick={() => {
+                  setNoFundedDialogOpen(false);
+                  void linkWallet('evm');
+                }}
+              >
+                <Wallet size={13} />
+                <span>+ Attach EVM</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={linkBusy}
+                onClick={() => {
+                  setNoFundedDialogOpen(false);
+                  void linkWallet('svm');
+                }}
+              >
+                <Wallet size={13} />
+                <span>+ Attach Solana</span>
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      <ProfileModal
+        isOpen={editingProfile}
+        onClose={() => setEditingProfile(false)}
+        address={user?.userAddress}
+        onSave={async (next) => {
+          const updated = await api.profile({
+            name: next.name ?? next.nickname ?? '',
+            bio: next.bio ?? '',
+            image: next.image ?? next.avatar ?? null,
+            banner: next.banner ?? null,
+            socials: next.socials ?? [],
+          });
+          await refreshUser();
+          return updated;
+        }}
+      />
+
+      {showTerms ? <Disclaimer close={() => setShowTerms(false)} /> : null}
+    </>
+  );
 }
