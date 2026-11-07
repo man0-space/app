@@ -186,3 +186,162 @@ function describeDestinationOwner(route: IntentRoute, handleLabel: string): stri
   }
   return `Your Smart Account (${handleLabel})`;
 }
+
+export function AccountChip() {
+  const {
+    user,
+    busy,
+    open,
+    setOpen,
+    refreshUser,
+    logout,
+    clear,
+    links,
+    linkBusy,
+    linkError,
+    linkWallet,
+  } = useAuth();
+  const {
+    availableUsd,
+    approvedUsd,
+    totalUsd,
+    hasApprovedLimit,
+    loading: balanceLoading,
+    approving,
+    approvalStep,
+    lastApprovalTxUrl,
+    error: balanceError,
+    refresh: refreshBalance,
+    approveLimit,
+    reclaimLimit,
+  } = useSession();
+  const { nickname, bio, avatar, banner, socials } = useProfile(user?.userAddress);
+
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+
+  const [limitUsd, setLimitUsd] = useState('5');
+  const limitTouchedRef = useRef(false);
+  const [limitNotice, setLimitNotice] = useState<string | null>(null);
+  const [limitError, setLimitError] = useState<string | null>(null);
+
+  const [moneyPrompt, setMoneyPrompt] = useState('');
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [resolvedRoute, setResolvedRoute] = useState<IntentRoute | null>(null);
+  const [liveLegs, setLiveLegs] = useState<IntentLeg[]>([]);
+  const [legRuntime, setLegRuntime] = useState<Record<number, LegRuntimeState>>({});
+  const [manualMode, setManualMode] = useState(false);
+  const [swapStatus, setSwapStatus] = useState<IntentStatus | null>(null);
+  const [moneyError, setMoneyError] = useState<string | null>(null);
+  const [copiedDeposit, setCopiedDeposit] = useState<string | null>(null);
+  const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
+  const [noFundedDialogOpen, setNoFundedDialogOpen] = useState(false);
+
+  const pocketsRef = useRef<HTMLDivElement | null>(null);
+  const fundPocketRef = useRef<HTMLDetailsElement | null>(null);
+  const moneyInputRef = useRef<HTMLInputElement | null>(null);
+  const limitInputId = useId();
+  const moneyInputId = useId();
+
+  const evmLinks = links.filter((item) => item.network !== 'svm');
+  const svmLinks = links.filter((item) => item.network === 'svm');
+
+  const handleLabel = user
+    ? formatCreatorHandle(nickname || user.name, user.userAddress)
+    : 'Sign in';
+
+  const numericAvailableUsd = Number(availableUsd.replace(/[^0-9.]/g, '')) || 0;
+  const numericTotalUsd = Number(totalUsd.replace(/[^0-9.]/g, '')) || 0;
+  const smartAccountChipUsd =
+    numericAvailableUsd >= 1
+      ? '1'
+      : numericAvailableUsd >= 0.5
+        ? '0.50'
+        : numericAvailableUsd >= 0.25
+          ? '0.25'
+          : numericAvailableUsd >= 0.05
+            ? (Math.floor(numericAvailableUsd * 100) / 100).toFixed(2)
+            : '0.25';
+
+  useEffect(() => {
+    if (limitTouchedRef.current || balanceLoading) return;
+    if (numericTotalUsd > 0 && numericTotalUsd < 5) {
+      const capped = Math.floor(numericTotalUsd * 100) / 100;
+      if (capped >= 0.05) {
+        setLimitUsd(capped % 1 === 0 ? String(capped) : capped.toFixed(2));
+      }
+    }
+  }, [balanceLoading, numericTotalUsd]);
+
+  useEffect(() => {
+    if (!open) return;
+    const container = pocketsRef.current;
+    if (!container || Object.hasOwn(HTMLDetailsElement.prototype, 'name')) return;
+    const onToggle = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLDetailsElement) || !target.open) return;
+      if (target.getAttribute('name') !== POCKET_GROUP) return;
+      for (const sibling of container.querySelectorAll<HTMLDetailsElement>(
+        `details[name="${POCKET_GROUP}"]`,
+      )) {
+        if (sibling !== target) sibling.open = false;
+      }
+    };
+    container.addEventListener('toggle', onToggle, true);
+    return () => container.removeEventListener('toggle', onToggle, true);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || liveLegs.length === 0 || !fundPocketRef.current) return;
+    fundPocketRef.current.open = true;
+  }, [open, liveLegs.length]);
+
+  useEffect(() => {
+    if (!open || liveLegs.length === 0) return;
+    if (
+      swapStatus?.status === 'SUCCESS' ||
+      swapStatus?.status === 'REFUNDED' ||
+      swapStatus?.status === 'FAILED'
+    ) {
+      return;
+    }
+    let active = true;
+    const poll = async () => {
+      try {
+        const checks = await Promise.all(
+          liveLegs.map((leg) =>
+            leg.quote.depositAddress
+              ? api.intentsStatus(leg.quote.depositAddress, leg.quote.depositMemo)
+              : Promise.resolve<IntentStatus>({ status: 'PENDING_DEPOSIT' }),
+          ),
+        );
+        if (!active || checks.length === 0) return;
+        setLegRuntime((prev) => {
+          const updated: Record<number, LegRuntimeState> = { ...prev };
+          checks.forEach((st, idx) => {
+            updated[idx] = {
+              ...(updated[idx] ?? { state: 'idle' }),
+              status: st,
+            };
+          });
+          return updated;
+        });
+        const next = summarizeIntentStatuses(checks);
+        setSwapStatus(next);
+        if (next.status === 'SUCCESS') {
+          await refreshBalance();
+        }
+      } catch {
+        // Retry on next interval
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [open, liveLegs, swapStatus?.status, refreshBalance]);
+
+}
