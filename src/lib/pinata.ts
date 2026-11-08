@@ -96,3 +96,47 @@ export function buildWorkflowCardMetadata(
     })),
   };
 }
+
+export async function uploadWorkflowMetadata(metadata: Card): Promise<Pin> {
+  return api.pinJson({
+    content: metadata as unknown as Record<string, unknown>,
+    name: `workflow-${metadata.id}.json`,
+    keyvalues: {
+      type: 'workflow-card',
+      id: metadata.id,
+      name: metadata.name,
+      userAddress: metadata.userAddress,
+    },
+  });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('Failed to read file as base64.'));
+        return;
+      }
+      const commaIndex = result.indexOf(',');
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function uploadFileToIpfs(
+  file: File,
+  keyvalues?: Record<string, string>,
+): Promise<Pin> {
+  const fileBase64 = await fileToBase64(file);
+  return api.pinFile({
+    fileBase64,
+    fileName: file.name,
+    mimeType: file.type,
+    name: file.name,
+    keyvalues,
+  });
+}
