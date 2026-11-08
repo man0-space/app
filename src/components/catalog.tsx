@@ -220,3 +220,167 @@ function resolveEntryFallbackIcon(entry: Entry): LucideIcon {
   if (firstSub) return resolveSubgroupIcon('model', firstSub);
   return FileText;
 }
+
+function CatalogCard({
+  entry,
+  deferred,
+  onSelect,
+}: {
+  entry: Entry;
+  deferred: boolean;
+  onSelect: (entry: Entry) => void;
+}) {
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logoSrc = resolveEntryLogoUrl(entry);
+  const showLogo = Boolean(logoSrc && !logoFailed);
+  const FallbackIcon = resolveEntryFallbackIcon(entry);
+  const tierBadge = entry.isFrontier ? 'FRONTIER' : entry.isLatest ? 'LATEST' : null;
+
+  return (
+    <button
+      type="button"
+      className={`catalog-card ${deferred ? 'catalog-card--deferred' : ''} ${
+        entry.isFrontier ? 'catalog-card--frontier' : ''
+      }`}
+      data-kind={entry.kind}
+      onClick={() => onSelect(entry)}
+    >
+      <div className="catalog-card-head">
+        <span className="catalog-card-icon" aria-hidden="true">
+          {showLogo ? (
+            <img
+              src={logoSrc}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className={`catalog-card-logo ${isMonochromeDarkLogo(logoSrc) ? 'is-mono-dark' : ''}`}
+              onError={() => setLogoFailed(true)}
+            />
+          ) : (
+            <FallbackIcon size={13} className="catalog-card-glyph" />
+          )}
+        </span>
+        <span className="catalog-card-title">{entry.name}</span>
+        <span className="catalog-card-meta">
+          {entry.kind === 'model' && showLogo ? (
+            <FallbackIcon size={11} className="catalog-card-mod-glyph" aria-hidden="true" />
+          ) : null}
+          {tierBadge ? (
+            <span
+              className={`catalog-card-tier ${
+                entry.isFrontier ? 'catalog-card-tier--frontier' : 'catalog-card-tier--latest'
+              }`}
+            >
+              {tierBadge}
+            </span>
+          ) : null}
+        </span>
+      </div>
+      <div className="catalog-card-sub">{entry.description || entry.id}</div>
+      <span className="catalog-card-add" aria-hidden="true">
+        <Plus size={12} />
+      </span>
+    </button>
+  );
+}
+
+function PillowToolbar({
+  items,
+  selectedId,
+  onSelect,
+  ariaLabel,
+  kind,
+  sub = false,
+}: {
+  items: PillowItem[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  ariaLabel: string;
+  kind: Kind;
+  sub?: boolean;
+}) {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const [focusIdx, setFocusIdx] = useState(0);
+
+  useEffect(() => {
+    const selIdx = items.findIndex((item) => item.id === selectedId);
+    setFocusIdx(selIdx >= 0 ? selIdx : 0);
+  }, [items, selectedId]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if ('focusGroup' in HTMLElement.prototype || items.length === 0) return;
+    let next = focusIdx;
+    if (event.key === 'ArrowRight') {
+      next = (focusIdx + 1) % items.length;
+    } else if (event.key === 'ArrowLeft') {
+      next = (focusIdx - 1 + items.length) % items.length;
+    } else if (event.key === 'Home') {
+      next = 0;
+    } else if (event.key === 'End') {
+      next = items.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    setFocusIdx(next);
+    const buttons = barRef.current?.querySelectorAll<HTMLButtonElement>('button[data-pillow-id]');
+    buttons?.[next]?.focus();
+  };
+
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (!barRef.current) return;
+    if (
+      Math.abs(event.deltaY) > Math.abs(event.deltaX) &&
+      barRef.current.scrollWidth > barRef.current.clientWidth
+    ) {
+      barRef.current.scrollLeft += event.deltaY;
+    }
+  };
+
+  return (
+    <div
+      ref={barRef}
+      role="toolbar"
+      aria-label={ariaLabel}
+      data-kind={kind}
+      className={`catalog-pillow-bar ${
+        sub ? 'catalog-pillow-bar--sub' : 'catalog-pillow-bar--primary'
+      }`}
+      onKeyDown={handleKeyDown}
+      onWheel={handleWheel}
+      {...({ focusgroup: 'toolbar wrap' } as Record<string, string>)}
+    >
+      {items.map((item, idx) => {
+        const Icon = item.icon;
+        const isSelected = selectedId === item.id;
+        return (
+          <Tooltip
+            key={item.id}
+            position="bottom"
+            label={item.tooltipTitle}
+            description={`${item.count} ${item.count === 1 ? 'step' : 'steps'}`}
+          >
+            <button
+              type="button"
+              data-pillow-id={item.id}
+              aria-label={item.tooltipTitle}
+              aria-pressed={isSelected}
+              tabIndex={idx === focusIdx ? 0 : -1}
+              className={`catalog-pillow-chip ${sub ? 'catalog-pillow-chip--sub' : ''}`}
+              onFocus={() => setFocusIdx(idx)}
+              onClick={(event) => {
+                onSelect(item.id);
+                event.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              }}
+            >
+              <Icon size={sub ? 12 : 13.5} className="catalog-pillow-glyph" aria-hidden="true" />
+              <span className="catalog-pillow-text-wrap" aria-hidden={!isSelected}>
+                <span className="catalog-pillow-text">{item.label}</span>
+              </span>
+            </button>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
