@@ -330,3 +330,68 @@ export function sortCatalogEntries(
 
   return [...frontier, ...latest, ...rest];
 }
+
+export function peekCachedCatalogSnapshot(): Entry[] {
+  const combined: Entry[] = [];
+  for (const kind of kinds) {
+    const mem = cache.get(kind);
+    if (mem) {
+      combined.push(...mem);
+      continue;
+    }
+    const persisted = readPersistedCatalog(kind);
+    if (persisted) {
+      cache.set(kind, persisted);
+      combined.push(...persisted);
+    }
+  }
+  return combined;
+}
+
+export async function load(kind: Kind, signal: AbortSignal, refresh = false): Promise<Entry[]> {
+  if (!refresh) {
+    const previous = cache.get(kind);
+    if (previous) return previous;
+    const persisted = readPersistedCatalog(kind);
+    if (persisted) {
+      cache.set(kind, persisted);
+      void request<Entry[]>(`/catalog/${kind}`)
+        .then((fresh) => {
+          cache.set(kind, fresh);
+          writePersistedCatalog(kind, fresh);
+        })
+        .catch(() => undefined);
+      return persisted;
+    }
+  }
+  const suffix = refresh ? '?refresh=1' : '';
+  const result = await request<Entry[]>(`/catalog/${kind}${suffix}`, { signal });
+  cache.set(kind, result);
+  writePersistedCatalog(kind, result);
+  return result;
+}
+
+export interface CatalogSnapshot {
+  entries: Entry[];
+  errors: Partial<Record<Kind, string>>;
+}
+
+export async function loadAll(signal: AbortSignal, refresh = false): Promise<CatalogSnapshot> {
+  const settled = await Promise.allSettled(kinds.map((kind) => load(kind, signal, refresh)));
+  const entries: Entry[] = [];
+  const errors: Partial<Record<Kind, string>> = {};
+
+  settled.forEach((outcome, index) => {
+    const kind = kinds[index]!;
+    if (outcome.status === 'fulfilled') {
+      entries.push(...outcome.value);
+    } else {
+      const cached = cache.get(kind);
+      if (cached) entries.push(...cached);
+      errors[kind] =
+        outcome.reason instanceof Error ? outcome.reason.message : `Unable to load ${kind}s.`;
+    }
+  });
+
+  return { entries, errors };
+}
