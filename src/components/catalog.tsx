@@ -384,3 +384,343 @@ function PillowToolbar({
     </div>
   );
 }
+
+export function Catalog({
+  entries,
+  loading,
+  errors,
+  onRefresh,
+  onAddEntry,
+  onClose,
+  initialTab = 'model',
+  contextLabel = null,
+}: CatalogProps) {
+  const [tab, setTab] = useState<Kind>(initialTab);
+  const [query, setQuery] = useState('');
+  const [activeGroup, setActiveGroup] = useState<string>(ALL_PILLOW_ID);
+  const [activeSubgroup, setActiveSubgroup] = useState<string>(ALL_PILLOW_ID);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setTab(initialTab);
+    setActiveGroup(ALL_PILLOW_ID);
+    setActiveSubgroup(ALL_PILLOW_ID);
+    setVisibleCount(PAGE_SIZE);
+  }, [initialTab]);
+
+  const handleTabChange = (next: Kind) => {
+    setTab(next);
+    setActiveGroup(ALL_PILLOW_ID);
+    setActiveSubgroup(ALL_PILLOW_ID);
+    setVisibleCount(PAGE_SIZE);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  };
+
+  const trimmedQuery = query.trim().toLowerCase();
+
+  const tabEntries = useMemo(
+    () => entries.filter((entry) => entry.kind === tab),
+    [entries, tab],
+  );
+
+  const modelFamilyCounts = useMemo(
+    () => (tab === 'model' ? buildFamilyCounts(tabEntries) : undefined),
+    [tab, tabEntries],
+  );
+
+  const matchesQuery = useCallback(
+    (entry: Entry): boolean => {
+      if (!trimmedQuery) return true;
+      const groupLabels = (entry.groups ?? [])
+        .map((g) => displayGroupLabel(entry.kind, g))
+        .join(' ');
+      const subLabels = (entry.subgroups ?? []).map((s) => rawSubgroupKey(s)).join(' ');
+      const fam = entry.family ?? '';
+      const mod = entry.modality ?? '';
+      return `${entry.name} ${entry.description} ${entry.id} ${fam} ${mod} ${groupLabels} ${subLabels}`
+        .toLowerCase()
+        .includes(trimmedQuery);
+    },
+    [trimmedQuery],
+  );
+
+  const primaryPillows = useMemo<PillowItem[]>(() => {
+    if (tab === 'agent') return [];
+
+    const order =
+      tab === 'connector'
+        ? (CONNECTOR_ORIGIN_ORDER as readonly string[])
+        : (MODEL_MODALITY_ORDER as readonly string[]);
+
+    const counts = new Map<string, number>();
+    for (const preset of order) {
+      counts.set(preset, 0);
+    }
+
+    let totalMatching = 0;
+    for (const entry of tabEntries) {
+      if (!matchesQuery(entry)) continue;
+      totalMatching += 1;
+      const rawGroups =
+        entry.groups && entry.groups.length > 0
+          ? entry.groups
+          : [tab === 'connector' ? 'mcps' : 'others'];
+      for (const g of rawGroups) {
+        const normalized = order.includes(g) ? g : tab === 'model' ? 'others' : g;
+        counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+      }
+    }
+
+    if (totalMatching === 0) return [];
+
+    const categoryItems = order
+      .filter((id) => (counts.get(id) ?? 0) > 0)
+      .map((id) => {
+        const label = displayGroupLabel(tab, id);
+        return {
+          id,
+          label,
+          tooltipTitle: label.toUpperCase(),
+          count: counts.get(id) ?? 0,
+          icon: resolveGroupIcon(tab, id),
+        };
+      });
+
+    return [
+      {
+        id: ALL_PILLOW_ID,
+        label: 'all',
+        tooltipTitle: tab === 'model' ? 'ALL MODELS' : 'ALL CONNECTORS',
+        count: totalMatching,
+        icon: LayoutGrid,
+      },
+      ...categoryItems,
+    ];
+  }, [tab, tabEntries, matchesQuery]);
+
+  const resolvedGroup = useMemo(() => {
+    if (activeGroup === ALL_PILLOW_ID) return ALL_PILLOW_ID;
+    return primaryPillows.some((p) => p.id === activeGroup) ? activeGroup : ALL_PILLOW_ID;
+  }, [activeGroup, primaryPillows]);
+
+  const subPillows = useMemo<PillowItem[]>(() => {
+    if (resolvedGroup === ALL_PILLOW_ID || tab === 'agent') return [];
+    const prefix = `${resolvedGroup}/`;
+    const counts = new Map<string, number>();
+    let groupTotal = 0;
+
+    for (const entry of tabEntries) {
+      const entryGroups =
+        entry.groups && entry.groups.length > 0
+          ? entry.groups
+          : [tab === 'connector' ? 'mcps' : 'others'];
+      if (!entryGroups.includes(resolvedGroup)) continue;
+      if (!matchesQuery(entry)) continue;
+      groupTotal += 1;
+      for (const sub of entry.subgroups ?? []) {
+        if (!sub.startsWith(prefix)) continue;
+        counts.set(sub, (counts.get(sub) ?? 0) + 1);
+      }
+    }
+
+    const subItems = [...counts.entries()]
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([id, count]) => ({
+        id,
+        label: displaySubgroupLabel(id),
+        tooltipTitle: tooltipSubgroupLabel(id),
+        count,
+        icon: resolveSubgroupIcon(tab, id),
+      }));
+
+    const minSubItems = tab === 'model' ? 2 : 1;
+    if (subItems.length < minSubItems) return [];
+
+    return [
+      {
+        id: ALL_PILLOW_ID,
+        label: 'all',
+        tooltipTitle: `All ${displayGroupLabel(tab, resolvedGroup).toUpperCase()}`,
+        count: groupTotal,
+        icon: LayoutGrid,
+      },
+      ...subItems,
+    ];
+  }, [resolvedGroup, tab, tabEntries, matchesQuery]);
+
+  const resolvedSubgroup = useMemo(() => {
+    if (activeSubgroup === ALL_PILLOW_ID || resolvedGroup === ALL_PILLOW_ID) {
+      return ALL_PILLOW_ID;
+    }
+    return subPillows.some((p) => p.id === activeSubgroup) ? activeSubgroup : ALL_PILLOW_ID;
+  }, [activeSubgroup, resolvedGroup, subPillows]);
+
+  const filteredItems = useMemo<Entry[]>(() => {
+    const matching = tabEntries.filter((entry) => {
+      if (!matchesQuery(entry)) return false;
+      if (resolvedGroup !== ALL_PILLOW_ID) {
+        const groups =
+          entry.groups && entry.groups.length > 0
+            ? entry.groups
+            : [tab === 'connector' ? 'mcps' : 'others'];
+        if (!groups.includes(resolvedGroup)) return false;
+      }
+      if (resolvedSubgroup !== ALL_PILLOW_ID) {
+        if (!(entry.subgroups ?? []).includes(resolvedSubgroup)) return false;
+      }
+      return true;
+    });
+
+    return sortCatalogEntries(matching, tab, modelFamilyCounts);
+  }, [tabEntries, matchesQuery, resolvedGroup, resolvedSubgroup, tab, modelFamilyCounts]);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [trimmedQuery, resolvedGroup, resolvedSubgroup, tab]);
+
+  const handleSelectGroup = (groupId: string) => {
+    if (groupId === ALL_PILLOW_ID || resolvedGroup === groupId) {
+      setActiveGroup(ALL_PILLOW_ID);
+      setActiveSubgroup(ALL_PILLOW_ID);
+    } else {
+      setActiveGroup(groupId);
+      setActiveSubgroup(ALL_PILLOW_ID);
+    }
+  };
+
+  const handleSelectSubgroup = (subId: string) => {
+    setActiveSubgroup((curr) =>
+      subId === ALL_PILLOW_ID || curr === subId ? ALL_PILLOW_ID : subId,
+    );
+  };
+
+  const handleScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      if (visibleCount >= filteredItems.length) return;
+      const el = event.currentTarget;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) {
+        setVisibleCount((curr) => Math.min(curr + PAGE_SIZE, filteredItems.length));
+      }
+    },
+    [visibleCount, filteredItems.length],
+  );
+
+  const tabError = errors?.[tab];
+  const hasSubrow = resolvedGroup !== ALL_PILLOW_ID && subPillows.length > 0;
+  const visibleItems = filteredItems.slice(0, visibleCount);
+
+  return (
+    <aside className="studio-drawer studio-drawer-left stealth-glass" aria-label="Step catalog">
+      <div className="drawer-header">
+        <div className="drawer-title-group">
+          <span className="drawer-kicker">CATALOG</span>
+          {contextLabel ? <span className="drawer-sublabel">{contextLabel}</span> : null}
+        </div>
+        <div className="drawer-header-actions">
+          <Button
+            icon={<RefreshCw size={13} className={loading ? 'spin' : ''} />}
+            tooltip="Refresh catalog"
+            size="xs"
+            onClick={onRefresh}
+          />
+          <Button icon={<X size={14} />} tooltip="Close catalog" size="xs" onClick={onClose} />
+        </div>
+      </div>
+
+      <div className="drawer-controls catalog-controls">
+        <Search value={query} onChange={setQuery} placeholder="Filter steps..." />
+        <div className="segmented" role="tablist" aria-label="Step category">
+          {kinds.map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-selected={tab === item}
+              className={`seg-btn ${tab === item ? 'active' : ''}`}
+              onClick={() => handleTabChange(item)}
+            >
+              {item === 'model' ? 'MODEL' : item === 'connector' ? 'CONNECTOR' : 'AGENT'}
+            </button>
+          ))}
+        </div>
+
+        {tab !== 'agent' && primaryPillows.length > 0 ? (
+          <div className="catalog-filter-stack" data-kind={tab}>
+            <PillowToolbar
+              items={primaryPillows}
+              selectedId={resolvedGroup}
+              onSelect={handleSelectGroup}
+              ariaLabel={tab === 'model' ? 'Model modalities' : 'Connector sources'}
+              kind={tab}
+            />
+            <div
+              className={`catalog-subrow-shell ${hasSubrow ? 'is-open' : ''}`}
+              aria-hidden={!hasSubrow}
+              inert={!hasSubrow}
+            >
+              <div className="catalog-subrow-inner">
+                {subPillows.length > 0 ? (
+                  <PillowToolbar
+                    items={subPillows}
+                    selectedId={resolvedSubgroup}
+                    onSelect={handleSelectSubgroup}
+                    ariaLabel={
+                      tab === 'model' ? 'Model sub-modalities' : 'Connector subcategories'
+                    }
+                    kind={tab}
+                    sub
+                  />
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div
+        ref={listRef}
+        className="drawer-body scroll-area catalog-list"
+        onScroll={handleScroll}
+      >
+        {loading && tabEntries.length === 0 ? (
+          <div className="empty-note">Loading steps...</div>
+        ) : tabError && tabEntries.length === 0 ? (
+          <div className="catalog-error-box">
+            <p className="empty-note">{tabError}</p>
+            <button type="button" className="btn btn-ghost btn-xs" onClick={onRefresh}>
+              <RefreshCw size={12} />
+              <span>Retry</span>
+            </button>
+          </div>
+        ) : filteredItems.length === 0 ? (
+          <div className="empty-note">No matching steps</div>
+        ) : (
+          <>
+            {visibleItems.map((entry, idx) => (
+              <CatalogCard
+                key={`${entry.kind}-${entry.id}`}
+                entry={entry}
+                deferred={idx >= 16}
+                onSelect={onAddEntry}
+              />
+            ))}
+            {visibleCount < filteredItems.length ? (
+              <button
+                type="button"
+                className="catalog-more-btn"
+                onClick={() =>
+                  setVisibleCount((curr) => Math.min(curr + PAGE_SIZE, filteredItems.length))
+                }
+              >
+                Show more ({visibleCount} of {filteredItems.length})
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
