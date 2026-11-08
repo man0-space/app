@@ -185,3 +185,148 @@ export function buildBannerBrandLogos(
 
   return out;
 }
+
+const SUBGROUP_LABELS: Record<string, string> = {
+  chat: 'chat',
+  'vision-chat': 'vision',
+  'speech-to-text': 'stt',
+  'text-to-speech': 'tts',
+  'speech-to-speech': 's2s',
+  'text-to-audio': 'music',
+  speech: 'speech',
+  realtime: 'realtime',
+  'voice-activity-detection': 'vad',
+  'deep-research': 'research',
+  'text-to-image': 'txt2img',
+  'image-to-image': 'img2img',
+  'image-to-text': 'img2txt',
+  'object-detection': 'detection',
+  'image-segmentation': 'img seg',
+  'instance-segmentation': 'inst seg',
+  classification: 'classify',
+  'image-classification': 'img classify',
+  'zero-shot-classification': 'zero-shot',
+  'zero-shot-image-classification': 'zero-shot',
+  'keypoint-detection': 'keypoints',
+  'keypoints-detection': 'keypoints',
+  'depth-estimation': 'depth',
+  ocr: 'ocr',
+  rerank: 'rerank',
+  reranker: 'reranker',
+  decision: 'decision',
+  translation: 'translate',
+  custom: 'custom',
+  'text-to-video': 'txt2vid',
+  'image-to-video': 'img2vid',
+  'video-edit': 'edit',
+  'text-to-embedding': 'text',
+  'multimodal-embedding': 'multimodal',
+  'image-to-embedding': 'image',
+  'developer tools': 'dev tools',
+  'marketing automation': 'marketing',
+  'project management': 'projects',
+  'team collaboration': 'collab',
+  'artificial intelligence': 'ai',
+  'task management': 'tasks',
+  'ai web scraping': 'scraping',
+  'web scraping & browser': 'browser',
+  'images & design': 'design',
+  'social media marketing': 'social ads',
+  'social media accounts': 'social',
+  'file management & storage': 'storage',
+  'web search & research': 'search',
+  'customer support': 'support',
+  'hr talent & recruitment': 'hr',
+  'security & identity tools': 'security',
+  'scheduling & booking': 'booking',
+  'video conferencing': 'meetings',
+  'email newsletters': 'newsletters',
+  'payment processing': 'payments',
+  'forms & surveys': 'forms',
+};
+
+export function displayGroupLabel(kind: Kind, group: string): string {
+  const key = group.trim().toLowerCase();
+  if (key === ALL_PILLOW_ID) return 'all';
+  if (kind === 'connector') {
+    if (key === 'mcps' || key === 'mcp') return 'mcp';
+    if (key === 'onchain' || key === 'defi') return 'defi';
+    if (key === 'accounts' || key === 'account') return 'accounts';
+  }
+  return key.replace(/[-_]+/g, ' ');
+}
+
+export function rawSubgroupKey(scoped: string): string {
+  const slash = scoped.indexOf('/');
+  return (slash >= 0 ? scoped.slice(slash + 1) : scoped).trim().toLowerCase();
+}
+
+export function displaySubgroupLabel(scoped: string): string {
+  if (scoped === ALL_PILLOW_ID) return 'all';
+  const raw = rawSubgroupKey(scoped);
+  if (SUBGROUP_LABELS[raw]) return SUBGROUP_LABELS[raw]!;
+  return raw.replace(/[-_]+/g, ' ');
+}
+
+export function tooltipSubgroupLabel(scoped: string): string {
+  if (scoped === ALL_PILLOW_ID) return 'All';
+  const raw = rawSubgroupKey(scoped);
+  return raw
+    .split(/[\s_-]+/u)
+    .filter(Boolean)
+    .map((w) =>
+      w.length <= 3 && /^(ocr|ai|crm|bi|hr|it|seo|sms|api|mcp|stt|tts|vad)$/i.test(w)
+        ? w.toUpperCase()
+        : w[0]!.toUpperCase() + w.slice(1),
+    )
+    .join(' ');
+}
+
+function modelFrontierBucket(entry: Entry): FrontierBucket {
+  const g = entry.groups ?? [];
+  if (g.includes('image')) return 'image';
+  if (g.includes('video')) return 'video';
+  if (g.includes('music')) return 'music';
+  return 'text';
+}
+
+export function buildFamilyCounts(entries: readonly Entry[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.kind !== 'model') continue;
+    const fam = entry.family || 'other';
+    counts.set(fam, (counts.get(fam) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function sortCatalogEntries(
+  entries: readonly Entry[],
+  kind: Kind,
+  familyCounts?: ReadonlyMap<string, number>,
+): Entry[] {
+  if (kind !== 'model') return [...entries];
+  const counts = familyCounts ?? buildFamilyCounts(entries);
+
+  const frontier: Entry[] = [];
+  const latest: Entry[] = [];
+  const rest: Entry[] = [];
+
+  for (const item of entries) {
+    if (item.isFrontier) frontier.push(item);
+    else if (item.isLatest) latest.push(item);
+    else rest.push(item);
+  }
+
+  const byType = (a: Entry, b: Entry) =>
+    FRONTIER_TYPE_ORDER.indexOf(modelFrontierBucket(a)) -
+    FRONTIER_TYPE_ORDER.indexOf(modelFrontierBucket(b));
+
+  frontier.sort(byType);
+  latest.sort(byType);
+  rest.sort(
+    (a, b) => (counts.get(b.family || 'other') ?? 0) - (counts.get(a.family || 'other') ?? 0),
+  );
+
+  return [...frontier, ...latest, ...rest];
+}
