@@ -766,3 +766,136 @@ export function RunComposer({
     </form>
   );
 }
+
+interface ExtractedMediaItem {
+  kind: 'image' | 'audio' | 'video';
+  url: string;
+  alt: string;
+}
+
+const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+|data:image\/[^\s)]+)\)/gi;
+const URL_IN_TEXT_RE = /https?:\/\/[^\s<>"')\]}]+/gi;
+
+function classifyOutputMediaUrl(rawUrl: string): 'image' | 'audio' | 'video' | null {
+  const clean = rawUrl.split('?')[0]?.split('#')[0]?.toLowerCase() ?? '';
+  if (rawUrl.startsWith('data:image/') || /\.(png|jpe?g|webp|gif|avif|svg)$/.test(clean)) {
+    return 'image';
+  }
+  if (rawUrl.startsWith('data:audio/') || /\.(wav|mp3|ogg|m4a|flac|aac|opus)$/.test(clean)) {
+    return 'audio';
+  }
+  if (/\.(mp4|webm|mov)$/.test(clean)) {
+    return 'video';
+  }
+  return null;
+}
+
+function extractMediaFromOutput(output: string): ExtractedMediaItem[] {
+  const seen = new Set<string>();
+  const items: ExtractedMediaItem[] = [];
+
+  for (const match of output.matchAll(MARKDOWN_IMAGE_RE)) {
+    const alt = match[1]?.trim() || 'Generated image';
+    const url = match[2]?.trim();
+    if (url && !seen.has(url)) {
+      seen.add(url);
+      items.push({ kind: 'image', url, alt });
+    }
+  }
+
+  for (const match of output.matchAll(URL_IN_TEXT_RE)) {
+    const url = match[0]?.replace(/[.,;:!?]+$/, '');
+    if (!url || seen.has(url)) continue;
+    const kind = classifyOutputMediaUrl(url);
+    if (kind) {
+      seen.add(url);
+      items.push({ kind, url, alt: `Output ${kind}` });
+    }
+  }
+
+  return items;
+}
+
+export interface RichOutputProps {
+  output: string;
+  className?: string;
+}
+
+export function RichOutput({ output, className }: RichOutputProps) {
+  const mediaItems = useMemo(() => extractMediaFromOutput(output), [output]);
+  const markdownBody = useMemo(() => {
+    if (mediaItems.length === 0) return output;
+    const mediaUrls = new Set(mediaItems.map(m => m.url));
+    return output
+      .replace(MARKDOWN_IMAGE_RE, (full, _alt: string, url: string) =>
+        mediaUrls.has(url?.trim()) ? '' : full,
+      )
+      .trim();
+  }, [mediaItems, output]);
+
+  return (
+    <div className={`run-rich-output ${className || ''}`.trim()}>
+      {mediaItems.length > 0 ? (
+        <div className="run-rich-media-grid">
+          {mediaItems.map(item => (
+            <div key={item.url} className="run-rich-media-card">
+              {item.kind === 'image' ? (
+                <a href={item.url} target="_blank" rel="noopener noreferrer">
+                  <img
+                    src={item.url}
+                    alt={item.alt}
+                    loading="lazy"
+                    className="run-rich-image"
+                  />
+                </a>
+              ) : item.kind === 'audio' ? (
+                <audio
+                  controls
+                  preload="metadata"
+                  src={item.url}
+                  className="run-rich-audio"
+                />
+              ) : (
+                <video
+                  controls
+                  playsInline
+                  width={640}
+                  height={360}
+                  preload="metadata"
+                  src={item.url}
+                  className="run-rich-video"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {markdownBody ? (
+        <div className="run-markdown-body">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ children, href, ...props }) => (
+                <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+                  {children}
+                </a>
+              ),
+              table: ({ children, ...props }) => (
+                <div className="run-md-table-wrap">
+                  <table {...props}>{children}</table>
+                </div>
+              ),
+              th: ({ children, ...props }) => (
+                <th scope="col" {...props}>
+                  {children}
+                </th>
+              ),
+            }}
+          >
+            {markdownBody}
+          </ReactMarkdown>
+        </div>
+      ) : null}
+    </div>
+  );
+}
