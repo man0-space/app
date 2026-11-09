@@ -490,4 +490,256 @@ function StudioInner({
     });
   }, [setFlow]);
 
+  const selectedNode = useMemo(
+    () => flow.nodes.find((n) => n.id === selectedId) ?? null,
+    [flow.nodes, selectedId],
+  );
+
+  const openCatalogForInsertion = useCallback(
+    (anchorNodeId: string | null, direction: Direction | null, tab: Kind = 'model') => {
+      setPendingInsertion({ anchorNodeId, direction });
+      setCatalogTab(tab);
+      setCatalogOpen(true);
+      setToolboxOpen(false);
+    },
+    [],
+  );
+
+  const handleQuickAdd = useCallback(
+    (anchorNodeId: string, direction: Direction) => {
+      openCatalogForInsertion(anchorNodeId, direction, 'model');
+    },
+    [openCatalogForInsertion],
+  );
+
+  const currentLayoutMode: 'vertical' | 'serpentine' = useMemo(() => {
+    const usableH = Math.max(220, planeSize.height - canvasReserves.top - canvasReserves.bottom);
+    return isCompactCanvasViewport(planeSize.width) || planeSize.width < usableH * 0.92
+      ? 'vertical'
+      : 'serpentine';
+  }, [canvasReserves.bottom, canvasReserves.top, planeSize.height, planeSize.width]);
+
+  const fitStudioCanvas = useCallback(
+    (duration = 200, nodesOverride?: readonly Block[]) => {
+      const inst = instanceRef.current;
+      const targetNodes = nodesOverride ?? flow.nodes;
+      if (!inst || targetNodes.length === 0) return;
+      const measured = new Map<string, { width: number; height: number }>();
+      for (const n of targetNodes) {
+        const internal = inst.getInternalNode(n.id);
+        const w = internal?.measured?.width;
+        const h = internal?.measured?.height;
+        if (w && h) measured.set(n.id, { width: w, height: h });
+      }
+      const vp = computeSafeCanvasViewport(
+        targetNodes,
+        {
+          width: planeSize.width,
+          height: planeSize.height,
+          topReserve: canvasReserves.top,
+          bottomReserve: canvasReserves.bottom,
+        },
+        measured,
+      );
+      void inst.setViewport(vp, { duration });
+    },
+    [canvasReserves.bottom, canvasReserves.top, flow.nodes, planeSize.height, planeSize.width],
+  );
+
+  const topologyKey = useMemo(
+    () =>
+      `${flow.id}|${flow.nodes.map((n) => n.id).join(',')}|${flow.edges
+        .map((e) => `${e.source}->${e.target}`)
+        .join(',')}`,
+    [flow.edges, flow.id, flow.nodes],
+  );
+
+  useEffect(() => {
+    if (mode !== 'canvas' || flow.nodes.length === 0) return;
+    const isPortrait = currentLayoutMode === 'vertical';
+    const bucketW = Math.max(1, Math.round(planeSize.width / 160));
+    const bucketH = Math.max(1, Math.round(planeSize.height / 160));
+    const autoKey = `${topologyKey}|${isPortrait ? 'V' : 'H'}|${bucketW}x${bucketH}`;
+    if (lastAutoLayoutKeyRef.current === autoKey) return;
+    if (manualDragRef.current && lastAutoLayoutKeyRef.current.startsWith(`${topologyKey}|`)) {
+      return;
+    }
+    const arranged = computeAdaptiveWorkflowLayout(flow.nodes, flow.edges, {
+      width: planeSize.width,
+      height: planeSize.height,
+      topReserve: canvasReserves.top,
+      bottomReserve: canvasReserves.bottom,
+    });
+    const moved = arranged.nodes.some((n, idx) => {
+      const prev = flow.nodes[idx];
+      return (
+        !prev ||
+        Math.abs(prev.position.x - n.position.x) > 1 ||
+        Math.abs(prev.position.y - n.position.y) > 1
+      );
+    });
+    const handlesChanged = arranged.edges.some((e, idx) => {
+      const prev = flow.edges[idx];
+      return !prev || prev.sourceHandle !== e.sourceHandle || prev.targetHandle !== e.targetHandle;
+    });
+    if (moved || handlesChanged) {
+      setFlow((curr) => ({
+        ...curr,
+        nodes: arranged.nodes,
+        edges: arranged.edges,
+      }));
+      return;
+    }
+    lastAutoLayoutKeyRef.current = autoKey;
+    const timer = window.setTimeout(() => {
+      fitStudioCanvas(180);
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [
+    canvasReserves.bottom,
+    canvasReserves.top,
+    currentLayoutMode,
+    fitStudioCanvas,
+    flow.edges,
+    flow.nodes,
+    mode,
+    planeSize.height,
+    planeSize.width,
+    setFlow,
+    topologyKey,
+  ]);
+
+  useEffect(() => {
+    if (mode !== 'canvas' || flow.nodes.length === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      fitStudioCanvas(160);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    canvasReserves.bottom,
+    canvasReserves.top,
+    catalogOpen,
+    fitStudioCanvas,
+    flow.nodes.length,
+    mode,
+    overviewOpen,
+    planeSize.height,
+    planeSize.width,
+  ]);
+
+  const handleAddEntry = useCallback(
+    (entry: Entry) => {
+      let addedId: string | null = null;
+      let nextNodes: Block[] | undefined;
+      const anchorId =
+        pendingInsertion?.anchorNodeId ??
+        selectedId ??
+        (flow.nodes.length > 0 ? flow.nodes[flow.nodes.length - 1]!.id : null);
+      const direction: Direction | null =
+        pendingInsertion?.direction ??
+        (anchorId ? (currentLayoutMode === 'vertical' ? 'down' : 'right') : null);
+
+      manualDragRef.current = false;
+      lastAutoLayoutKeyRef.current = '';
+      commitFlow((current) => {
+        const inserted = insertDirectionalStep(current, entry, anchorId, direction, {
+          layoutMode: currentLayoutMode,
+        });
+        addedId = inserted.nodeId;
+        const arranged = layout(inserted.flow, {
+          width: planeSize.width,
+          height: planeSize.height,
+          topReserve: canvasReserves.top,
+          bottomReserve: canvasReserves.bottom,
+        });
+        nextNodes = arranged.nodes;
+        return arranged;
+      });
+
+      if (isCompactCanvasViewport()) {
+        setSelectedId(null);
+      } else if (addedId) {
+        setSelectedId(addedId);
+      }
+      setCatalogOpen(false);
+      setPendingInsertion(null);
+      setToolboxOpen(false);
+
+      window.setTimeout(() => {
+        fitStudioCanvas(200, nextNodes);
+      }, 40);
+    },
+    [
+      pendingInsertion,
+      selectedId,
+      flow.nodes,
+      currentLayoutMode,
+      commitFlow,
+      planeSize.width,
+      planeSize.height,
+      canvasReserves.top,
+      canvasReserves.bottom,
+      fitStudioCanvas,
+    ],
+  );
+
+  const handleUpdateStep = useCallback(
+    (id: string, patch: Partial<Step>) => {
+      commitFlow((current) => update(current, id, patch));
+    },
+    [commitFlow],
+  );
+
+  const handleRemoveStep = useCallback(
+    (id: string) => {
+      manualDragRef.current = false;
+      lastAutoLayoutKeyRef.current = '';
+      commitFlow((current) =>
+        layout(removeNode(current, id), {
+          width: planeSize.width,
+          height: planeSize.height,
+          topReserve: 66,
+          bottomReserve: 96,
+        }),
+      );
+      if (selectedId === id) setSelectedId(null);
+    },
+    [commitFlow, planeSize.height, planeSize.width, selectedId],
+  );
+
+  const handleAutoLayout = useCallback(() => {
+    manualDragRef.current = false;
+    lastAutoLayoutKeyRef.current = '';
+    commitFlow((current) =>
+      layout(current, {
+        width: planeSize.width,
+        height: planeSize.height,
+        topReserve: 66,
+        bottomReserve: 96,
+      }),
+    );
+    window.setTimeout(() => {
+      fitStudioCanvas(220);
+    }, 30);
+  }, [commitFlow, fitStudioCanvas, planeSize.height, planeSize.width]);
+
+  const handleNewFlow = useCallback(() => {
+    manualDragRef.current = false;
+    lastAutoLayoutKeyRef.current = '';
+    lastSyncedDraftJsonRef.current = null;
+    onClearOpenedFromWorkspace?.();
+    if (authenticated()) {
+      void api.clearDraft().catch(() => undefined);
+    }
+    const freshName = computeDefaultUnknownName();
+    setPast([]);
+    setFuture([]);
+    setFlow(create(freshName));
+    setSelectedId(null);
+    setPendingInsertion(null);
+    setTestResult(null);
+    setTestError(null);
+    onNotify('New canvas ready');
+  }, [onClearOpenedFromWorkspace, computeDefaultUnknownName, setFlow, onNotify]);
+
 }
