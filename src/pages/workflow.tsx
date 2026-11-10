@@ -297,3 +297,286 @@ export function WorkflowPage(props: WorkflowPageProps) {
     </ReactFlowProvider>
   );
 }
+
+function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps) {
+  const { user, config, openAuthModal } = useAuth();
+  const {
+    spendingAddress,
+    approvedUsd,
+    hasApprovedLimit,
+    getRunSession,
+    refresh: refreshSession,
+  } = useSession();
+
+  const [workflow, setWorkflow] = useState<Listing | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [sidePanelOpen, setSidePanelOpen] = useState<boolean>(() => !isCompactCanvasViewport());
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [outputDialogOpen, setOutputDialogOpen] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const [generatingBanner, setGeneratingBanner] = useState(false);
+
+  const planeRef = useRef<HTMLDivElement | null>(null);
+  const hudRef = useRef<HTMLElement | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [planeSize, setPlaneSize] = useState<{ width: number; height: number }>(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1200,
+    height: typeof window !== 'undefined' ? window.innerHeight - 56 : 760,
+  }));
+  const [canvasReserves, setCanvasReserves] = useState<{ top: number; bottom: number }>(() => ({
+    top: 72,
+    bottom: isCompactCanvasViewport() ? 228 : 254,
+  }));
+
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+
+  const [prompt, setPrompt] = useState('');
+  const [attachments, setAttachments] = useState<WorkflowAttachment[]>([]);
+  const [runnerCoordinator, setRunnerCoordinator] = useState<Coordinator | null>(null);
+  const [pausedThreadId, setPausedThreadId] = useState<string | null>(null);
+  const [liveStepOutputs, setLiveStepOutputs] = useState<Record<string, string>>({});
+  const [liveStepStreams, setLiveStepStreams] = useState<Record<string, string>>({});
+  const [liveCoordinatorStream, setLiveCoordinatorStream] = useState('');
+  const [liveActivities, setLiveActivities] = useState<
+    Array<{
+      id: string;
+      ts: number;
+      stepId: string | null;
+      kind: string;
+      status: 'running' | 'completed' | 'pending' | 'failed';
+      title: string;
+      summary?: string;
+    }>
+  >([]);
+  const [liveBills, setLiveBills] = useState<WorkflowBillItem[]>([]);
+  const [liveComposeBillWei, setLiveComposeBillWei] = useState('0');
+  const [dryRun, setDryRun] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runningStepId, setRunningStepId] = useState<string | null>(null);
+  const [execution, setExecution] = useState<Execution | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [missingConnectors, setMissingConnectors] = useState<MissingConnectorRequirement[]>([]);
+  const [proactiveMissingConnectors, setProactiveMissingConnectors] = useState<
+    MissingConnectorRequirement[]
+  >([]);
+  const [connectorAuthByNodeId, setConnectorAuthByNodeId] = useState<
+    Record<string, ConnectorAuthState>
+  >({});
+  const [credentialsModalOpen, setCredentialsModalOpen] = useState(false);
+  const [missingInputs, setMissingInputs] = useState<MissingInputRequirement[]>([]);
+  const [inputPromptOpen, setInputPromptOpen] = useState(false);
+  const [catalogModels, setCatalogModels] = useState<Entry[]>([]);
+  const [activeTab, setActiveTab] = useState<'final' | string>('final');
+  const [copied, setCopied] = useState(false);
+
+  const instanceRef = useRef<ReactFlowInstance<Block, Link> | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const hydratedScopeRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      streamAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sidePanelOpen) return;
+    if (typeof window === 'undefined' || window.innerWidth > 768) return;
+    return ownEscape(() => setSidePanelOpen(false), 15);
+  }, [sidePanelOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onViewportChange = (evt: MediaQueryListEvent) => {
+      if (evt.matches) {
+        setSidePanelOpen(false);
+      }
+    };
+    mq.addEventListener('change', onViewportChange);
+    return () => mq.removeEventListener('change', onViewportChange);
+  }, []);
+
+  useEffect(() => {
+    const el = planeRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const planeRect = el.getBoundingClientRect();
+      if (planeRect.width <= 0 || planeRect.height <= 0) return;
+      setPlaneSize((prev) =>
+        Math.abs(prev.width - planeRect.width) < 6 && Math.abs(prev.height - planeRect.height) < 6
+          ? prev
+          : { width: Math.round(planeRect.width), height: Math.round(planeRect.height) },
+      );
+      const hudRect = hudRef.current?.getBoundingClientRect();
+      const dockRect = dockRef.current?.getBoundingClientRect();
+      const nextTop =
+        hudRect && hudRect.height > 0
+          ? Math.max(52, Math.ceil(hudRect.bottom - planeRect.top) + 16)
+          : 72;
+      const nextBottom =
+        dockRect && dockRect.height > 0
+          ? Math.max(120, Math.ceil(planeRect.bottom - dockRect.top) + 22)
+          : isCompactCanvasViewport(planeRect.width)
+            ? 228
+            : 254;
+      setCanvasReserves((prev) =>
+        Math.abs(prev.top - nextTop) < 6 && Math.abs(prev.bottom - nextBottom) < 6
+          ? prev
+          : { top: nextTop, bottom: nextBottom },
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(el);
+    if (hudRef.current) ro.observe(hudRef.current);
+    if (dockRef.current) ro.observe(dockRef.current);
+    return () => ro.disconnect();
+  }, [loading, sidePanelOpen, workflow?.id, running, Boolean(runError), attachments.length]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    load('model', controller.signal)
+      .then((loaded) => {
+        if (!controller.signal.aborted) setCatalogModels(loaded);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  const refreshThreads = useCallback(
+    async (targetWorkflowId: string): Promise<Thread[]> => {
+      if (!user?.userAddress) {
+        setThreads([]);
+        return [];
+      }
+      try {
+        const list = await api.workflowThreads(targetWorkflowId);
+        setThreads(list);
+        return list;
+      } catch {
+        return [];
+      }
+    },
+    [user?.userAddress],
+  );
+
+  const handleStreamEvent = useCallback(
+    (evt: RunStreamEvent) => {
+      if (evt.type === 'thread:init') {
+        setActiveThreadId(evt.threadId);
+        if (workflowId) {
+          void refreshThreads(workflowId);
+        }
+      } else if (evt.type === 'step:start') {
+        setRunningStepId(evt.stepId);
+        setLiveStepStreams((prev) => ({ ...prev, [evt.stepId]: '' }));
+      } else if (evt.type === 'step:done') {
+        setLiveStepOutputs((prev) => ({ ...prev, [evt.stepId]: evt.output }));
+      } else if (evt.type === 'sse:activity') {
+        setLiveActivities((prev) => [...prev.slice(-49), evt]);
+      } else if (evt.type === 'sse:delta') {
+        if (evt.stepId) {
+          setLiveStepStreams((prev) => ({
+            ...prev,
+            [evt.stepId!]: (prev[evt.stepId!] ?? '') + evt.delta,
+          }));
+        } else {
+          setLiveCoordinatorStream((prev) => prev + evt.delta);
+        }
+      } else if (evt.type === 'sse:bill') {
+        setLiveComposeBillWei(evt.composeBillWei);
+        setLiveBills(evt.bills);
+      } else if (evt.type === 'connector:pause') {
+        setMissingConnectors(evt.missing);
+        if (evt.missing[0]?.threadId) {
+          setPausedThreadId(evt.missing[0].threadId);
+          setActiveThreadId(evt.missing[0].threadId);
+        }
+        setCredentialsModalOpen(true);
+      } else if (evt.type === 'input:pause') {
+        setMissingInputs(evt.missingInputs);
+        if (evt.missingInputs[0]?.threadId) {
+          setPausedThreadId(evt.missingInputs[0].threadId);
+          setActiveThreadId(evt.missingInputs[0].threadId);
+        }
+        setInputPromptOpen(true);
+      }
+    },
+    [refreshThreads, workflowId],
+  );
+
+  const applyRunOutcomeError = useCallback(
+    (err: unknown, fallbackThreadId?: string) => {
+      if (err instanceof Fault && err.code === 'CONNECTOR_REQUIRED' && err.missing?.length) {
+        const tid = err.threadId ?? err.missing[0]?.threadId ?? fallbackThreadId ?? null;
+        setMissingConnectors(err.missing);
+        if (tid) {
+          setPausedThreadId(tid);
+          setActiveThreadId(tid);
+        }
+        setCredentialsModalOpen(true);
+        setRunError(err.message);
+      } else if (
+        err instanceof Fault &&
+        err.code === 'INPUT_REQUIRED' &&
+        err.missingInputs?.length
+      ) {
+        const tid = err.threadId ?? err.missingInputs[0]?.threadId ?? fallbackThreadId ?? null;
+        setMissingInputs(err.missingInputs);
+        if (tid) {
+          setPausedThreadId(tid);
+          setActiveThreadId(tid);
+        }
+        setInputPromptOpen(true);
+        setRunError(err.message);
+      } else {
+        setRunError(err instanceof Error ? err.message : 'Workflow run failed.');
+      }
+    },
+    [],
+  );
+
+  const attachToRunningThread = useCallback(
+    async (targetWorkflowId: string, targetThreadId: string, defaultStepId?: string | null) => {
+      streamAbortRef.current?.abort();
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
+      setRunning(true);
+      setRunningStepId(defaultStepId ?? null);
+      try {
+        const res = await api.watchWorkflowThread(
+          targetWorkflowId,
+          targetThreadId,
+          handleStreamEvent,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setExecution(res);
+        setPausedThreadId(null);
+        setMissingInputs([]);
+        setMissingConnectors([]);
+        setRunError(null);
+        setActiveTab('final');
+        setOutputDialogOpen(true);
+        onNotify(res.dry ? 'Dry run complete' : 'Run complete');
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        applyRunOutcomeError(err, targetThreadId);
+      } finally {
+        if (streamAbortRef.current === controller) {
+          setRunningStepId(null);
+          setRunning(false);
+          void refreshThreads(targetWorkflowId);
+          void refreshSession();
+        }
+      }
+    },
+    [applyRunOutcomeError, handleStreamEvent, onNotify, refreshSession, refreshThreads],
+  );
+
+}
