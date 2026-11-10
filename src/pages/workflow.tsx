@@ -1307,4 +1307,947 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     return nonText.length > 0 ? entryInputs : undefined;
   }, [workflow]);
 
+  if (loading) {
+    return (
+      <div className="studio-container wf-run-container">
+        <div className="empty-box stealth-glass">
+          <LoaderCircle size={22} className="spin" />
+          <p>Loading workflow...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLockedUnpublished) {
+    return (
+      <div className="studio-container wf-run-container">
+        <div className="empty-box stealth-glass">
+          <Lock size={22} aria-hidden="true" />
+          <h2>Private workflow</h2>
+          <p>Only the creator can open or run this workflow until it is published.</p>
+          <div className="wf-card-actions">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => navigateTo('/market')}
+            >
+              <ArrowLeft size={14} aria-hidden="true" />
+              <span>Market</span>
+            </button>
+            {!user ? (
+              <button type="button" className="btn btn-primary btn-sm" onClick={openAuthModal}>
+                <span>Sign in</span>
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!workflow) {
+    return (
+      <div className="studio-container wf-run-container">
+        <div className="empty-box stealth-glass">
+          <p>{loadError || 'Workflow not found.'}</p>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => navigateTo('/market')}
+          >
+            <ArrowLeft size={14} aria-hidden="true" />
+            <span>Back</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const tasks = workflow.terms?.tasks ?? workflow.tasks ?? [];
+  const creatorFeePercent = workflow.published ? (workflow.terms?.creatorFee ?? 0) : 0;
+  const platformFeePercent = workflow.published ? (config?.fees?.platformPercent ?? 2) : 0;
+  const mintTxUrl = workflow.terms?.txHash
+    ? explorerTxUrl(workflow.terms.txHash, workflow.terms.contractId)
+    : null;
+  const ipfsCardUrl = workflow.terms?.cid ? getIpfsGatewayUrl(workflow.terms.cid) : null;
+
+  const activeStepIndex = runningStepId
+    ? Math.max(1, workflow.nodes.findIndex((n) => n.id === runningStepId) + 1)
+    : 1;
+  const activeStepNode = runningStepId
+    ? workflow.nodes.find((n) => n.id === runningStepId)
+    : workflow.nodes[0];
+  const completedStepCount = workflow.nodes.filter(
+    (n) => stepStatusByNodeId.get(n.id) === 'done',
+  ).length;
+  const canContinueThread = Boolean(
+    pausedThreadId ||
+    (!execution &&
+      activeThreadId &&
+      completedStepCount > 0 &&
+      completedStepCount < workflow.nodes.length),
+  );
+  const hasAnyOutput =
+    Boolean(execution?.output) ||
+    Object.keys(liveStepOutputs).length > 0 ||
+    Object.values(liveStepStreams).some((v) => v.length > 0) ||
+    liveCoordinatorStream.length > 0 ||
+    liveActivities.length > 0;
+
+  const activeTrace =
+    activeTab === 'final' || activeTab === 'activity'
+      ? null
+      : execution?.steps.find((step) => step.id === activeTab) ?? null;
+  const liveStepOutput =
+    activeTab !== 'final' && activeTab !== 'activity'
+      ? (liveStepOutputs[activeTab] ?? liveStepStreams[activeTab])
+      : undefined;
+  const liveStreamingPreview =
+    (runningStepId ? liveStepStreams[runningStepId] : '') ||
+    liveCoordinatorStream ||
+    Object.values(liveStepOutputs).at(-1) ||
+    '';
+  const displayedOutput =
+    activeTab === 'activity'
+      ? ''
+      : activeTrace
+        ? activeTrace.output
+        : activeTab === 'final'
+          ? (execution?.output || liveCoordinatorStream || liveStreamingPreview)
+          : (liveStepOutput ?? '');
+
+  const latestActivity = liveActivities.at(-1) ?? null;
+  const activeStreamSnippet = (
+    (runningStepId ? liveStepStreams[runningStepId] : '') || liveCoordinatorStream
+  )
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(-140);
+  const billsToShow = execution?.bills?.length ? execution.bills : liveBills;
+
+  const openStepInspector = (nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    const hasStepResult =
+      Boolean(execution?.steps.some((s) => s.id === nodeId)) ||
+      Object.prototype.hasOwnProperty.call(liveStepOutputs, nodeId) ||
+      Boolean(liveStepStreams[nodeId]);
+    if (hasStepResult || (running && runningStepId === nodeId)) {
+      setActiveTab(nodeId);
+      setOutputDialogOpen(true);
+    } else if (hasAnyOutput || running) {
+      setActiveTab('final');
+      setOutputDialogOpen(true);
+    }
+  };
+
+  return (
+    <div className="studio-container wf-run-container">
+      <div
+        className="canvas-stage wf-canvas-stage"
+        data-side-open={sidePanelOpen ? 'true' : 'false'}
+      >
+        <div ref={planeRef} className="canvas-plane wf-canvas-plane">
+          <header ref={hudRef} className="studio-hud wf-hud">
+            <div className="studio-hud-left stealth-glass wf-hud-left">
+              <Button
+                icon={<ArrowLeft size={14} />}
+                tooltip="Back"
+                size="xs"
+                onClick={handleBack}
+              />
+              <h1 className="wf-hud-title">{workflow.name}</h1>
+
+              {running ? (
+                <button
+                  type="button"
+                  className="wf-hud-live-pill is-executing"
+                  onClick={() => setOutputDialogOpen(true)}
+                >
+                  <LoaderCircle size={12} className="spin" aria-hidden="true" />
+                  <span>Step {activeStepIndex}/{workflow.nodes.length} · Executing</span>
+                </button>
+              ) : effectiveMissingConnectors.length > 0 ? (
+                <button
+                  type="button"
+                  className="wf-hud-live-pill is-paused"
+                  onClick={() => {
+                    if (!user) openAuthModal();
+                    else setCredentialsModalOpen(true);
+                  }}
+                >
+                  <Link2 size={12} aria-hidden="true" />
+                  <span>Connect</span>
+                </button>
+              ) : pausedThreadId && missingInputs.length > 0 ? (
+                <button
+                  type="button"
+                  className="wf-hud-live-pill is-paused"
+                  onClick={() => setInputPromptOpen(true)}
+                >
+                  <AlertTriangle size={12} aria-hidden="true" />
+                  <span>Needs Input</span>
+                </button>
+              ) : execution ? (
+                <button
+                  type="button"
+                  className="wf-hud-live-pill is-done"
+                  onClick={() => {
+                    setActiveTab('final');
+                    setOutputDialogOpen(true);
+                  }}
+                >
+                  <Sparkles size={12} aria-hidden="true" />
+                  <span>Done · {formatMicroUsdc(execution.totalChargedWei)}</span>
+                </button>
+              ) : completedStepCount > 0 ? (
+                <button
+                  type="button"
+                  className="wf-hud-live-pill is-done"
+                  onClick={() => {
+                    const lastDoneId =
+                      [...workflow.nodes]
+                        .reverse()
+                        .find((n) => stepStatusByNodeId.get(n.id) === 'done')?.id ?? 'final';
+                    setActiveTab(lastDoneId);
+                    setOutputDialogOpen(true);
+                  }}
+                >
+                  <Sparkles size={12} aria-hidden="true" />
+                  <span>
+                    Steps {completedStepCount}/{workflow.nodes.length}
+                  </span>
+                </button>
+              ) : null}
+            </div>
+
+            <div
+              className="studio-hud-right stealth-glass wf-hud-right"
+              role="toolbar"
+              aria-label="Workflow controls"
+            >
+              <div className="wf-hud-zoom hide-mobile">
+                <Button
+                  icon={<Minus size={14} />}
+                  tooltip="Zoom out"
+                  size="xs"
+                  onClick={() => void instanceRef.current?.zoomOut({ duration: 150 })}
+                />
+                <Button
+                  icon={<Maximize2 size={13} />}
+                  tooltip="Fit canvas"
+                  size="xs"
+                  onClick={() => fitWorkflowCanvas(200)}
+                />
+                <Button
+                  icon={<Plus size={14} />}
+                  tooltip="Zoom in"
+                  size="xs"
+                  onClick={() => void instanceRef.current?.zoomIn({ duration: 150 })}
+                />
+              </div>
+
+              <button
+                type="button"
+                className={`wf-session-pill ${hasApprovedLimit ? 'is-funded' : ''}`}
+                onClick={openAuthModal}
+                title={user ? 'Manage session allowance' : 'Sign in'}
+              >
+                <Wallet size={13} aria-hidden="true" />
+                <span className="hide-mobile">Approved</span>
+                <strong>{user ? approvedUsd : '$0.00'}</strong>
+              </button>
+
+              {isOwner && !workflow.published ? (
+                <Button
+                  icon={<Edit3 size={13} />}
+                  tooltip="Edit in Studio"
+                  size="xs"
+                  onClick={() =>
+                    onOpenDraft({
+                      id: workflow.id,
+                      name: workflow.name,
+                      brief: workflow.brief,
+                      banner: workflow.banner ?? null,
+                      ...(workflow.tasks?.length ? { tasks: workflow.tasks } : {}),
+                      ...(workflow.coordinator !== undefined
+                        ? { coordinator: workflow.coordinator }
+                        : {}),
+                      nodes: workflow.nodes,
+                      edges: workflow.edges,
+                      modified: workflow.modified,
+                    })
+                  }
+                />
+              ) : null}
+
+              {!sidePanelOpen ? (
+                <Button
+                  icon={<PanelRight size={14} />}
+                  tooltip="Workflow card"
+                  size="xs"
+                  aria-label="Open workflow card panel"
+                  aria-expanded={false}
+                  onClick={() => setSidePanelOpen(true)}
+                />
+              ) : null}
+            </div>
+          </header>
+
+          <ReactFlow<Block, Link>
+            nodes={nodesForCanvas}
+            edges={edgesWithState}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onInit={(instance) => {
+              instanceRef.current = instance;
+              window.requestAnimationFrame(() => {
+                fitWorkflowCanvas(0);
+              });
+            }}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable={true}
+            onNodeClick={(_, node) => openStepInspector(node.id)}
+            onPaneClick={() => setSelectedNodeId(null)}
+            minZoom={0.24}
+            maxZoom={1.5}
+            proOptions={{ hideAttribution: true }}
+          />
+
+          <div ref={dockRef} className="wf-floating-dock">
+            <div
+              className={`wf-prompt-card stealth-glass ${running ? 'is-running' : ''} ${pausedThreadId ? 'is-paused' : ''}`.trim()}
+            >
+              <div className="wf-prompt-bar">
+                <CoordinatorField
+                  mode="runner"
+                  compact
+                  value={runnerCoordinator}
+                  entries={catalogModels}
+                  disabled={running}
+                  onNotify={onNotify}
+                  onChange={(nextCoord) => {
+                    setRunnerCoordinator(nextCoord);
+                    setPausedThreadId(null);
+                  }}
+                />
+
+                <div className="wf-prompt-toggles">
+                  <Tooltip
+                    label="Dry run"
+                    description="Simulates paid actions without external side effects"
+                  >
+                    <button
+                      type="button"
+                      className={`wf-meta-chip ${dryRun ? 'is-dry' : ''}`}
+                      aria-pressed={dryRun}
+                      disabled={running}
+                      onClick={() => setDryRun((v) => !v)}
+                    >
+                      <span>DRY</span>
+                    </button>
+                  </Tooltip>
+
+                  {effectiveMissingConnectors.length > 0 && !credentialsModalOpen ? (
+                    <button
+                      type="button"
+                      className="wf-meta-chip is-warn"
+                      onClick={() => {
+                        if (!user) openAuthModal();
+                        else setCredentialsModalOpen(true);
+                      }}
+                    >
+                      <Link2 size={11} aria-hidden="true" />
+                      <span>Connect</span>
+                    </button>
+                  ) : null}
+
+                  {missingInputs.length > 0 && !inputPromptOpen ? (
+                    <button
+                      type="button"
+                      className="wf-meta-chip is-warn"
+                      onClick={() => setInputPromptOpen(true)}
+                    >
+                      <span>Add input</span>
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              {running ? (
+                <button
+                  type="button"
+                  className="wf-live-sse-strip"
+                  onClick={() => setOutputDialogOpen(true)}
+                  aria-label="Open live execution stream"
+                >
+                  <span className="wf-fold-dot" aria-hidden="true" />
+                  <span className="wf-live-sse-title">
+                    {latestActivity?.title ||
+                      `Step ${activeStepIndex}/${workflow.nodes.length} · ${activeStepNode?.data.entry?.name || activeStepNode?.data.label || 'Executing'
+                      }`}
+                  </span>
+                  {activeStreamSnippet ? (
+                    <span className="wf-live-sse-snippet" aria-live="off">
+                      {activeStreamSnippet}
+                    </span>
+                  ) : null}
+                  {BigInt(liveComposeBillWei || '0') > 0n ? (
+                    <span className="wf-live-sse-bill">
+                      {formatMicroUsdc(liveComposeBillWei)}
+                    </span>
+                  ) : null}
+                </button>
+              ) : null}
+
+              <RunComposer
+                floating
+                label={canContinueThread ? 'Continue Thread' : 'Workflow Prompt'}
+                value={prompt}
+                onChange={setPrompt}
+                attachments={attachments}
+                onAttachmentsChange={setAttachments}
+                acceptedInputs={rootAcceptedInputs}
+                placeholder={workflow.brief || 'Prompt workflow, attach media, or record voice...'}
+                busy={running}
+                submitDisabled={workflow.nodes.length === 0}
+                submitLabel={canContinueThread ? 'Continue' : dryRun ? 'Dry Run' : 'Run'}
+                busyLabel="Executing..."
+                onSubmit={(overrideAttachments) =>
+                  void handleRun(
+                    undefined,
+                    overrideAttachments ? { attachments: overrideAttachments } : undefined,
+                  )
+                }
+                onAuthRequired={() => {
+                  if (!user) {
+                    openAuthModal();
+                    return false;
+                  }
+                  return true;
+                }}
+                secondaryAction={
+                  !user || !hasApprovedLimit ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={openAuthModal}
+                    >
+                      <span>{!user ? 'Sign in' : 'Approve limit'}</span>
+                    </button>
+                  ) : null
+                }
+                errorText={runError}
+              />
+            </div>
+          </div>
+        </div>
+
+        {sidePanelOpen ? (
+          <>
+            <div
+              className="wf-side-backdrop"
+              aria-hidden="true"
+              onClick={() => setSidePanelOpen(false)}
+            />
+            <aside
+              className="studio-drawer studio-drawer-right wf-side-panel stealth-glass"
+              aria-label="Workflow card"
+            >
+              <div className="drawer-header">
+                <h2 className="wf-drawer-title">{workflow.name}</h2>
+                <div className="drawer-header-actions">
+                  <Button
+                    icon={<PanelRight size={14} />}
+                    tooltip="Close workflow card"
+                    size="xs"
+                    active
+                    aria-label="Close workflow card panel"
+                    aria-expanded={true}
+                    onClick={() => setSidePanelOpen(false)}
+                  />
+                </div>
+              </div>
+
+              {user || hasAnyOutput || running || Boolean(!execution?.dry && execution?.proofUrl) ? (
+                <div className="wf-drawer-subbar">
+                  {user ? (
+                    <ThreadSelector
+                      threads={threads}
+                      activeThreadId={activeThreadId}
+                      disabled={running}
+                      iconOnlyMobile
+                      onSelectThread={(item) =>
+                        hydrateThread(item, workflow, { autoOpenModals: false })
+                      }
+                      onNewThread={handleStartNewThread}
+                    />
+                  ) : (
+                    <span />
+                  )}
+                  <ExecutionBadges
+                    showOutput={hasAnyOutput || running}
+                    outputActive={outputDialogOpen}
+                    onToggleOutput={() => setOutputDialogOpen((v) => !v)}
+                    proofUrl={!execution?.dry ? execution?.proofUrl : null}
+                  />
+                </div>
+              ) : null}
+
+              <div className="drawer-body scroll-area wf-side-body">
+                <article className="wf-card wf-side-card">
+                  {canEditBanner ? (
+                    <BannerMediaFrame
+                      src={workflow.banner}
+                      uploading={uploadingBanner}
+                      generating={generatingBanner}
+                      uploadLabel="Upload banner"
+                      changeLabel="Change banner"
+                      removeLabel="Clear banner"
+                      generateLabel="Generate banner"
+                      regenerateLabel="Regenerate banner"
+                      generateDescription="Uses Name, Description & Steps"
+                      onUploadFile={handleWorkflowBannerUpload}
+                      onGenerate={() => void handleWorkflowBannerGenerate()}
+                      onRemove={
+                        workflow.banner ? () => void handleWorkflowBannerRemove() : undefined
+                      }
+                    />
+                  ) : workflow.banner ? (
+                    <BannerMediaFrame src={workflow.banner} />
+                  ) : null}
+
+                  <div className="wf-card-top">
+                    {tasks.length > 0 ? <TaskPills tasks={tasks} /> : <span />}
+                    <span className="wf-price">
+                      {creatorFeePercent > 0 ? `+${creatorFeePercent}%` : '0%'} royalty
+                    </span>
+                  </div>
+
+                  {workflow.terms?.description || workflow.brief ? (
+                    <p className="wf-side-desc">
+                      {workflow.terms?.description || workflow.brief}
+                    </p>
+                  ) : null}
+
+                  <div className="wf-side-creator-row">
+                    {workflow.userAddress ? (
+                      <CreatorSlot
+                        address={workflow.userAddress}
+                        fallbackName={workflow.creatorName}
+                        fallbackAvatar={workflow.creatorAvatar}
+                        showExplorer
+                        onSelectCreator={(address) => {
+                          if (workflow.published) {
+                            navigateToCreator(address);
+                          } else {
+                            navigateTo('/workspace');
+                          }
+                        }}
+                      />
+                    ) : null}
+
+                    <div className="wf-side-links">
+                      {workflow.terms?.chainWorkflowId && mintTxUrl ? (
+                        <a
+                          href={mintTxUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="chip-btn"
+                        >
+                          <span>#{workflow.terms.chainWorkflowId}</span>
+                          <ExternalLink size={10} aria-hidden="true" />
+                        </a>
+                      ) : null}
+                      {ipfsCardUrl ? (
+                        <a
+                          href={ipfsCardUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="chip-btn"
+                        >
+                          <span>IPFS</span>
+                          <ExternalLink size={10} aria-hidden="true" />
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="wf-fee-grid">
+                    <div className="wf-fee-cell">
+                      <span className="wf-fee-label">Creator</span>
+                      <strong className={creatorFeePercent > 0 ? 'accent-gold' : ''}>
+                        {creatorFeePercent > 0 ? `+${creatorFeePercent}%` : '0%'}
+                      </strong>
+                    </div>
+                    <div className="wf-fee-cell">
+                      <span className="wf-fee-label">Platform</span>
+                      <strong>{platformFeePercent}%</strong>
+                    </div>
+                    <div className="wf-fee-cell">
+                      <span className="wf-fee-label">Allowance</span>
+                      <strong className={hasApprovedLimit ? 'accent-gold' : ''}>
+                        {user ? approvedUsd : '$0.00'}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <details className="wf-steps-fold">
+                    <summary className="wf-steps-summary">
+                      <span className="wf-steps-summary-text">
+                        Steps ({workflow.nodes.length})
+                      </span>
+                      {running ? (
+                        <span className="wf-fold-badge is-executing">
+                          <span className="wf-fold-dot" aria-hidden="true" />
+                          <span>executing</span>
+                        </span>
+                      ) : pausedThreadId ? (
+                        <span className="wf-fold-badge is-paused">paused</span>
+                      ) : completedStepCount > 0 ? (
+                        <span className="wf-fold-badge is-done">
+                          {completedStepCount}/{workflow.nodes.length} done
+                        </span>
+                      ) : null}
+                    </summary>
+
+                    <ol className="overview-steps-list wf-folded-steps-list" role="list">
+                      {workflow.nodes.map((node, idx) => {
+                        const status = stepStatusByNodeId.get(node.id) ?? 'idle';
+                        const priceLabel = stepPriceByNodeId.get(node.id);
+                        return (
+                          <li key={node.id}>
+                            <button
+                              type="button"
+                              className={`overview-step-row wf-fold-step-row is-${status}`}
+                              data-kind={node.data.kind}
+                              onClick={() => openStepInspector(node.id)}
+                            >
+                              <span className="overview-step-idx">{idx + 1}</span>
+                              <span className="overview-step-title">
+                                {node.data.entry?.name || node.data.label}
+                              </span>
+                              {priceLabel ? (
+                                <span className="node-price-tag">{priceLabel}</span>
+                              ) : null}
+                              {status === 'executing' ? (
+                                <span className="wf-step-inline-state is-executing">
+                                  <LoaderCircle size={11} className="spin" aria-hidden="true" />
+                                  <span>executing</span>
+                                </span>
+                              ) : status === 'done' ? (
+                                <span className="wf-step-inline-state is-done">done</span>
+                              ) : status === 'paused' ? (
+                                <span className="wf-step-inline-state is-paused">paused</span>
+                              ) : (
+                                <span className="node-type" data-kind={node.data.kind}>
+                                  {node.data.kind.toUpperCase()}
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </details>
+                </article>
+
+                {execution ? (
+                  <section className="wf-side-receipt" aria-label="Settlement receipt">
+                    <div className="wf-side-section-head">
+                      <span className="drawer-kicker">SETTLEMENT</span>
+                      {execution.txHash ? (
+                        <div className="wf-card-actions">
+                          <a
+                            href={explorerTxUrl(execution.txHash, execution.network)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="icon-btn btn-xs"
+                            aria-label="View settlement transaction"
+                          >
+                            <ExternalLink size={11} aria-hidden="true" />
+                          </a>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="run-receipt-bar">
+                      <span>
+                        {execution.dry ? 'Dry · ' : ''}Charged{' '}
+                        <strong>{formatMicroUsdc(execution.totalChargedWei)}</strong>
+                      </span>
+                      <div className="run-receipt-breakdown">
+                        <span>Compute {formatMicroUsdc(execution.composeBillWei)}</span>
+                        {BigInt(execution.creatorFeeWei || '0') > 0n ? (
+                          <span>· Creator {formatMicroUsdc(execution.creatorFeeWei)}</span>
+                        ) : null}
+                        <span>· Platform {formatMicroUsdc(execution.platformFeeWei)}</span>
+                      </div>
+                    </div>
+                    <ReceiptBillsFold bills={billsToShow} />
+                  </section>
+                ) : null}
+              </div>
+            </aside>
+          </>
+        ) : null}
+      </div>
+
+      <Modal
+        open={outputDialogOpen}
+        onClose={() => setOutputDialogOpen(false)}
+        title={running ? `Executing · ${workflow.name}` : workflow.name}
+        size="lg"
+        headerActions={
+          <div className="wf-sse-dialog-actions">
+            {running ? (
+              <span className="wf-fold-badge is-executing">
+                <span className="wf-fold-dot" aria-hidden="true" />
+                <span>step {activeStepIndex}/{workflow.nodes.length}</span>
+              </span>
+            ) : null}
+            {!execution?.dry && execution?.proofUrl ? (
+              <Tooltip label="IPFS Execution Proof">
+                <a
+                  href={execution.proofUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="wf-result-badge is-proof"
+                >
+                  <ShieldCheck size={12} aria-hidden="true" />
+                  <span className="wf-result-badge-label">Proof</span>
+                </a>
+              </Tooltip>
+            ) : null}
+            {execution?.txHash ? (
+              <a
+                href={explorerTxUrl(execution.txHash, execution.network)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="icon-btn btn-xs"
+                aria-label="View settlement transaction"
+              >
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
+            ) : null}
+            {displayedOutput ? (
+              <Button
+                icon={copied ? <Check size={13} /> : <Copy size={13} />}
+                tooltip={copied ? 'Copied' : 'Copy output'}
+                size="xs"
+                onClick={() => {
+                  void navigator.clipboard.writeText(displayedOutput);
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1600);
+                }}
+              />
+            ) : null}
+          </div>
+        }
+      >
+        <div className="wf-sse-dialog-body">
+          {running ? (
+            <div className="wf-sse-live-banner" role="status" aria-live="polite">
+              <LoaderCircle size={15} className="spin" aria-hidden="true" />
+              <div className="wf-sse-live-copy">
+                <strong>
+                  {latestActivity?.title ||
+                    `Executing Step ${activeStepIndex} of ${workflow.nodes.length}`}
+                </strong>
+                <span>
+                  {activeStepNode?.data.entry?.name ||
+                    activeStepNode?.data.label ||
+                    'Coordinator orchestrating steps'}
+                </span>
+              </div>
+              {BigInt(liveComposeBillWei || '0') > 0n ? (
+                <span className="wf-live-sse-bill">{formatMicroUsdc(liveComposeBillWei)}</span>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div
+            className="run-output-tabs"
+            role="tablist"
+            aria-label="Execution step outputs"
+            onKeyDown={(evt) => {
+              if (
+                evt.key !== 'ArrowRight' &&
+                evt.key !== 'ArrowLeft' &&
+                evt.key !== 'Home' &&
+                evt.key !== 'End'
+              ) {
+                return;
+              }
+              const tabs = Array.from(
+                evt.currentTarget.querySelectorAll<HTMLButtonElement>(
+                  'button[role="tab"]:not(:disabled)',
+                ),
+              );
+              if (tabs.length === 0) return;
+              const currentIdx = tabs.indexOf(document.activeElement as HTMLButtonElement);
+              let nextIdx = 0;
+              if (evt.key === 'Home') nextIdx = 0;
+              else if (evt.key === 'End') nextIdx = tabs.length - 1;
+              else if (evt.key === 'ArrowRight') nextIdx = (currentIdx + 1) % tabs.length;
+              else nextIdx = (currentIdx - 1 + tabs.length) % tabs.length;
+              evt.preventDefault();
+              const nextBtn = tabs[nextIdx];
+              nextBtn?.focus();
+              nextBtn?.click();
+            }}
+          >
+            <button
+              type="button"
+              role="tab"
+              tabIndex={activeTab === 'final' ? 0 : -1}
+              aria-selected={activeTab === 'final'}
+              className={`chip-btn ${activeTab === 'final' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('final')}
+            >
+              Deliverable
+            </button>
+            {workflow.nodes.map((node, idx) => {
+              const status = stepStatusByNodeId.get(node.id) ?? 'idle';
+              const priceLabel = stepPriceByNodeId.get(node.id);
+              const selectable =
+                status === 'done' ||
+                status === 'executing' ||
+                Boolean(execution?.steps.some((s) => s.id === node.id)) ||
+                Boolean(liveStepOutputs[node.id]) ||
+                Boolean(liveStepStreams[node.id]);
+              return (
+                <button
+                  key={node.id}
+                  type="button"
+                  role="tab"
+                  tabIndex={activeTab === node.id ? 0 : -1}
+                  disabled={!selectable}
+                  aria-selected={activeTab === node.id}
+                  className={`chip-btn wf-step-tab ${activeTab === node.id ? 'is-active' : ''} is-${status}`}
+                  onClick={() => setActiveTab(node.id)}
+                >
+                  <span>
+                    {idx + 1}. {node.data.entry?.name || node.data.label}
+                  </span>
+                  {priceLabel ? <span className="node-price-tag">{priceLabel}</span> : null}
+                </button>
+              );
+            })}
+            {liveActivities.length > 0 ? (
+              <button
+                type="button"
+                role="tab"
+                tabIndex={activeTab === 'activity' ? 0 : -1}
+                aria-selected={activeTab === 'activity'}
+                className={`chip-btn wf-step-tab ${activeTab === 'activity' ? 'is-active' : ''}`}
+                onClick={() => setActiveTab('activity')}
+              >
+                <span>Activity ({liveActivities.length})</span>
+              </button>
+            ) : null}
+          </div>
+
+          {execution ? (
+            <>
+              <div className="run-receipt-bar">
+                <span>
+                  {execution.dry ? 'Dry Run · ' : ''}Charged:{' '}
+                  <strong>{formatMicroUsdc(execution.totalChargedWei)}</strong>
+                </span>
+                <div className="run-receipt-breakdown">
+                  <span>Compute {formatMicroUsdc(execution.composeBillWei)}</span>
+                  {BigInt(execution.creatorFeeWei || '0') > 0n ? (
+                    <span>· Creator {formatMicroUsdc(execution.creatorFeeWei)}</span>
+                  ) : null}
+                  <span>· Platform {formatMicroUsdc(execution.platformFeeWei)}</span>
+                </div>
+              </div>
+              <ReceiptBillsFold bills={billsToShow} />
+            </>
+          ) : billsToShow.length > 0 ? (
+            <ReceiptBillsFold bills={billsToShow} />
+          ) : null}
+
+          <div className="run-output-stage wf-sse-output-stage scrollable">
+            {activeTab === 'activity' ? (
+              <ol className="wf-activity-feed" role="list">
+                {liveActivities.map((act) => (
+                  <li key={act.id} className={`wf-activity-row is-${act.status}`}>
+                    <span className={`wf-activity-dot is-${act.status}`} aria-hidden="true" />
+                    <div className="wf-activity-content">
+                      <div className="wf-activity-head">
+                        <span className="wf-activity-kind">{act.kind.toUpperCase()}</span>
+                        <strong className="wf-activity-title">{act.title}</strong>
+                      </div>
+                      {act.summary ? (
+                        <p className="wf-activity-summary">{act.summary}</p>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : displayedOutput ? (
+              <RichOutput output={displayedOutput} />
+            ) : running ? (
+              <div className="run-placeholder">
+                <LoaderCircle size={18} className="spin" aria-hidden="true" />
+                <p>Streaming live execution events from Coordinator...</p>
+              </div>
+            ) : (
+              <div className="run-placeholder">
+                <Sparkles size={18} aria-hidden="true" />
+                <p>Run the workflow from the floating prompt-box to stream step outputs.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      <CredentialsModal
+        open={credentialsModalOpen && effectiveMissingConnectors.length > 0}
+        missing={effectiveMissingConnectors}
+        userAddress={subjectAddress}
+        onClose={() => {
+          setCredentialsModalOpen(false);
+          void refreshConnectorStatus();
+        }}
+        onConnected={(decisions) => {
+          const shouldAutoResume = Boolean(pausedThreadId || missingConnectors.length > 0);
+          const resumeId = pausedThreadId ?? missingConnectors[0]?.threadId ?? undefined;
+          setCredentialsModalOpen(false);
+          setMissingConnectors([]);
+          void refreshConnectorStatus();
+          if (shouldAutoResume) {
+            void handleRun(undefined, {
+              ...(resumeId ? { threadId: resumeId } : {}),
+              ...(decisions?.length ? { connectorDecisions: decisions } : {}),
+            });
+          } else {
+            onNotify('Account connected');
+          }
+        }}
+      />
+
+      <Prompt
+        open={inputPromptOpen && missingInputs.length > 0}
+        missing={missingInputs}
+        initialPrompt={prompt}
+        initialAttachments={attachments}
+        busy={running}
+        onClose={() => setInputPromptOpen(false)}
+        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments }) => {
+          const resumeId = pausedThreadId ?? missingInputs[0]?.threadId ?? undefined;
+          setPrompt(nextPrompt);
+          setAttachments(nextAttachments);
+          setInputPromptOpen(false);
+          setMissingInputs([]);
+          void handleRun(undefined, {
+            prompt: nextPrompt,
+            attachments: nextAttachments,
+            ...(resumeId ? { threadId: resumeId } : {}),
+          });
+        }}
+      />
+    </div>
+  );
 }
