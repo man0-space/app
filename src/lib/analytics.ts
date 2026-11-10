@@ -225,3 +225,202 @@ export function emptyAnalyticsResponse(
     updatedAt: new Date().toISOString(),
   };
 }
+
+function finiteNonNeg(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function percentileSorted(sorted: readonly number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1));
+  return sorted[idx];
+}
+
+export function mergeTotals(left: Totals, right: Totals): Totals {
+  const metrics: Record<string, number> = { ...left.usage.metrics };
+  for (const [k, v] of Object.entries(right.usage.metrics)) {
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      metrics[k] = (metrics[k] ?? 0) + v;
+    }
+  }
+
+  const unitMap = new Map<string, InferenceAnalytics.InferenceUsageUnit>();
+  for (const u of [...(left.usage.units ?? []), ...(right.usage.units ?? [])]) {
+    const key = `${u.key}:${u.unit}`;
+    const existing = unitMap.get(key);
+    if (existing) {
+      existing.quantity += u.quantity;
+    } else {
+      unitMap.set(key, { ...u });
+    }
+  }
+
+  const lCount = finiteNonNeg(left.latency?.count);
+  const rCount = finiteNonNeg(right.latency?.count);
+  const totalCount = lCount + rCount;
+  const lAvg = finiteNonNeg(left.latency?.averageMs);
+  const rAvg = finiteNonNeg(right.latency?.averageMs);
+  const lP50 = finiteNonNeg(left.latency?.p50Ms);
+  const rP50 = finiteNonNeg(right.latency?.p50Ms);
+  const lP95 = finiteNonNeg(left.latency?.p95Ms);
+  const rP95 = finiteNonNeg(right.latency?.p95Ms);
+  const lP99 = finiteNonNeg(left.latency?.p99Ms);
+  const rP99 = finiteNonNeg(right.latency?.p99Ms);
+
+  const mergedLatency =
+    totalCount === 0
+      ? { count: 0, averageMs: 0, p50Ms: 0, p95Ms: 0, p99Ms: 0 }
+      : rCount === 0
+        ? { count: lCount, averageMs: lAvg, p50Ms: lP50, p95Ms: lP95, p99Ms: lP99 }
+        : lCount === 0
+          ? { count: rCount, averageMs: rAvg, p50Ms: rP50, p95Ms: rP95, p99Ms: rP99 }
+          : {
+              count: totalCount,
+              averageMs: (lAvg * lCount + rAvg * rCount) / totalCount,
+              p50Ms: (lP50 * lCount + rP50 * rCount) / totalCount,
+              p95Ms: Math.max(lP95, rP95),
+              p99Ms: Math.max(lP99, rP99),
+            };
+
+  return {
+    requests: {
+      total: left.requests.total + right.requests.total,
+      succeeded: left.requests.succeeded + right.requests.succeeded,
+      failed: left.requests.failed + right.requests.failed,
+      aborted: (left.requests.aborted ?? 0) + (right.requests.aborted ?? 0),
+      streamed: left.requests.streamed + right.requests.streamed,
+    },
+    usage: {
+      metrics,
+      units: [...unitMap.values()],
+    },
+    billing: {
+      inferenceAmountAtomic: addAtomicAmounts(
+        left.billing.inferenceAmountAtomic,
+        right.billing.inferenceAmountAtomic,
+      ),
+      platformFeeAtomic: addAtomicAmounts(
+        left.billing.platformFeeAtomic,
+        right.billing.platformFeeAtomic,
+      ),
+      finalAmountAtomic: addAtomicAmounts(
+        left.billing.finalAmountAtomic,
+        right.billing.finalAmountAtomic,
+      ),
+      currency: 'USDC',
+      decimals: 6,
+    },
+    latency: mergedLatency,
+  };
+}
+
+function mergeBreakdowns(lists: Breakdown[][]): Breakdown[] {
+  const byKey = new Map<string, Breakdown>();
+  for (const list of lists) {
+    for (const item of list) {
+      const existing = byKey.get(item.key);
+      if (!existing) {
+        byKey.set(item.key, {
+          key: item.key,
+          ...(item.label ? { label: item.label } : {}),
+          ...(item.types ? { types: [...item.types] } : {}),
+          ...(item.lastAt ? { lastAt: item.lastAt } : {}),
+          totals: mergeTotals(emptyTotals(), item.totals),
+        });
+      } else {
+        const mergedTypes = new Set<string>([...(existing.types ?? []), ...(item.types ?? [])]);
+        const latestAt =
+          existing.lastAt && item.lastAt
+            ? Date.parse(item.lastAt) > Date.parse(existing.lastAt)
+              ? item.lastAt
+              : existing.lastAt
+            : item.lastAt ?? existing.lastAt;
+        byKey.set(item.key, {
+          key: item.key,
+          label: existing.label ?? item.label,
+          ...(mergedTypes.size > 0 ? { types: [...mergedTypes] } : {}),
+          ...(latestAt ? { lastAt: latestAt } : {}),
+          totals: mergeTotals(existing.totals, item.totals),
+        });
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
+export function mergeAnalyticsResponses(
+  responses: readonly Response[],
+  fallbackFilters: InferenceAnalytics.InferenceAnalyticsFilters = {},
+): Response {
+  if (responses.length === 0) {
+    return emptyAnalyticsResponse(fallbackFilters);
+  }
+  if (responses.length === 1) {
+    return responses[0];
+  }
+
+  let totals = emptyTotals();
+  const timelineByStart = new Map<string, InferenceAnalytics.InferenceAnalyticsBucket>();
+  const requestById = new Map<string, InferenceAnalytics.InferenceRequestRecord>();
+  const settlementById = new Map<string, InferenceAnalytics.InferenceSettlement>();
+
+  for (const res of responses) {
+    totals = mergeTotals(totals, res.totals);
+    for (const b of res.timeline) {
+      const cur = timelineByStart.get(b.start);
+      if (!cur) {
+        timelineByStart.set(b.start, {
+          start: b.start,
+          end: b.end,
+          totals: mergeTotals(emptyTotals(), b.totals),
+        });
+      } else {
+        cur.totals = mergeTotals(cur.totals, b.totals);
+      }
+    }
+    for (const r of res.requests.data) {
+      if (!requestById.has(r.id)) requestById.set(r.id, r);
+    }
+    for (const s of res.settlements.data) {
+      if (!settlementById.has(s.id)) settlementById.set(s.id, s);
+    }
+  }
+
+  const sortedTimeline = [...timelineByStart.values()].sort(
+    (a, b) => Date.parse(a.start) - Date.parse(b.start),
+  );
+  const sortedRequests = [...requestById.values()].sort(
+    (a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt),
+  );
+  const sortedSettlements = [...settlementById.values()].sort(
+    (a, b) =>
+      Date.parse(b.settledAt || b.createdAt) - Date.parse(a.settledAt || a.createdAt),
+  );
+
+  const base = responses[0];
+  return {
+    kind: 'inference',
+    filters: base.filters ?? fallbackFilters,
+    totals,
+    breakdowns: {
+      families: mergeBreakdowns(responses.map((r) => r.breakdowns.families)),
+      models: mergeBreakdowns(responses.map((r) => r.breakdowns.models)),
+      types: mergeBreakdowns(responses.map((r) => r.breakdowns.types)),
+      operations: mergeBreakdowns(responses.map((r) => r.breakdowns.operations)),
+      statuses: mergeBreakdowns(responses.map((r) => r.breakdowns.statuses)),
+      settlements: mergeBreakdowns(responses.map((r) => r.breakdowns.settlements)),
+    },
+    timeline: sortedTimeline,
+    requests: {
+      data: sortedRequests,
+      nextCursor: responses.find((r) => r.requests.nextCursor)?.requests.nextCursor ?? null,
+    },
+    settlements: {
+      data: sortedSettlements,
+      nextCursor:
+        responses.find((r) => r.settlements.nextCursor)?.settlements.nextCursor ?? null,
+    },
+    updatedAt: base.updatedAt,
+  };
+}
