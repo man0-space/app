@@ -742,4 +742,262 @@ function StudioInner({
     onNotify('New canvas ready');
   }, [onClearOpenedFromWorkspace, computeDefaultUnknownName, setFlow, onNotify]);
 
+  const handleSaveDraft = useCallback(async () => {
+    if (savingDraft) return;
+    if (!user || !authenticated()) {
+      openAuthModal();
+      return;
+    }
+    setSavingDraft(true);
+    try {
+      const cleanName = flow.name.trim() || computeDefaultUnknownName();
+      const saved = await saveDraftItem({ ...flow, name: cleanName }, cleanName);
+      lastSyncedDraftJsonRef.current = null;
+      onClearOpenedFromWorkspace?.();
+      const nextFreshName = nextUnknownWorkflowName([
+        ...drafts.map((d) => d.title),
+        saved.title,
+      ]);
+      setPast([]);
+      setFuture([]);
+      setSelectedId(null);
+      setPendingInsertion(null);
+      setTestResult(null);
+      setTestError(null);
+      setFlow(create(nextFreshName));
+      onNotify(`Saved "${saved.title}" to Workspace`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Could not save draft');
+    } finally {
+      setSavingDraft(false);
+    }
+  }, [
+    savingDraft,
+    user,
+    openAuthModal,
+    flow,
+    computeDefaultUnknownName,
+    saveDraftItem,
+    onClearOpenedFromWorkspace,
+    drafts,
+    setFlow,
+    onNotify,
+  ]);
+
+  const handleBannerUpload = useCallback(
+    async (file: File) => {
+      setUploadingBanner(true);
+      try {
+        const bannerUrl = await uploadMediaImage(file, 'workflow-banner');
+        commitFlow((curr) => ({
+          ...curr,
+          banner: bannerUrl,
+          modified: new Date().toISOString(),
+        }));
+      } catch (err) {
+        onNotify(err instanceof Error ? err.message : 'Unable to upload banner');
+      } finally {
+        setUploadingBanner(false);
+      }
+    },
+    [commitFlow, onNotify],
+  );
+
+  const handleGenerateBanner = useCallback(async () => {
+    if (!user || !authenticated()) {
+      openAuthModal();
+      return;
+    }
+    setGeneratingBanner(true);
+    try {
+      const logos = buildBannerBrandLogos(flow.nodes);
+
+      const generated = await api.generateBanner({
+        title: flow.name.trim() || 'man0 Workflow',
+        description:
+          flow.brief?.trim() ||
+          flow.nodes.map((n) => n.data.label).join(', ') ||
+          'Autonomous multi-step AI and Web3 workflow.',
+        ...(logos.length > 0 ? { logos } : {}),
+      });
+      commitFlow((curr) => ({
+        ...curr,
+        banner: generated.imageUrl,
+        modified: new Date().toISOString(),
+      }));
+      onNotify('Generated workflow banner');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Unable to generate banner');
+    } finally {
+      setGeneratingBanner(false);
+    }
+  }, [user, openAuthModal, flow.name, flow.brief, flow.nodes, commitFlow, onNotify]);
+
+  const openTestRunPanel = useCallback(() => {
+    if (mode !== 'canvas') setMode('canvas');
+    setSelectedId(null);
+    setRightPanel('test');
+    setOverviewOpen(true);
+    setTestError(null);
+  }, [mode, setMode]);
+
+  const executeTestRun = useCallback(
+    async (
+      event?: FormEvent,
+      overrides?: {
+        prompt?: string;
+        attachments?: WorkflowAttachment[];
+        threadId?: string;
+        connectorDecisions?: ConnectorDecisionItem[];
+      },
+    ) => {
+      event?.preventDefault();
+      if (flow.nodes.length === 0) {
+        setTestError('Add at least one step first.');
+        return;
+      }
+      if (flow.nodes.some((n) => !n.data.entry)) {
+        setTestError('Select a catalog step for every node first.');
+        return;
+      }
+      if (!user) {
+        openAuthModal();
+        return;
+      }
+
+      const effectiveInput = (overrides?.prompt ?? testInput).trim();
+      const effectiveAttachments = overrides?.attachments ?? testAttachments;
+      const resumeThreadId = overrides?.threadId?.trim() || undefined;
+      const activeCoordinator = testCoordinator ?? flow.coordinator ?? null;
+
+      setTesting(true);
+      setTestError(null);
+      setMissingConnectors([]);
+      setCredentialsModalOpen(false);
+      setMissingInputs([]);
+      setInputPromptOpen(false);
+      if (!resumeThreadId) {
+        setPausedTestThreadId(null);
+        setTestResult(null);
+        setTestLiveTitle(null);
+        setTestLiveSnippet('');
+        setTestLiveBillWei('0');
+        setTestActiveTab('final');
+      }
+      const firstPendingId = resumeThreadId
+        ? (flow.nodes.find((n) => !n.data.output)?.id ?? flow.nodes[0]?.id ?? null)
+        : (flow.nodes[0]?.id ?? null);
+      setRunningNodeId(firstPendingId);
+
+      try {
+        const session = await getRunSession();
+        if (!session) {
+          setTesting(false);
+          setRunningNodeId(null);
+          openAuthModal();
+          setTestError('Approve a session limit in Account to run steps.');
+          return;
+        }
+
+        const result = await api.testRunDraft(
+          flow,
+          effectiveInput || flow.brief || undefined,
+          session,
+          {
+            dry: dryTest,
+            ...(effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
+            ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
+            ...(activeCoordinator ? { coordinator: activeCoordinator } : {}),
+            ...(overrides?.connectorDecisions?.length
+              ? { connectorDecisions: overrides.connectorDecisions }
+              : {}),
+            onEvent: (evt) => {
+              if (evt.type === 'step:start') {
+                setRunningNodeId(evt.stepId);
+                setTestLiveSnippet('');
+              } else if (evt.type === 'step:done') {
+                setFlow((curr) => ({
+                  ...curr,
+                  nodes: curr.nodes.map((node) =>
+                    node.id === evt.stepId
+                      ? { ...node, data: { ...node.data, output: evt.output } }
+                      : node,
+                  ),
+                }));
+              } else if (evt.type === 'sse:activity') {
+                setTestLiveTitle(evt.summary || evt.title);
+              } else if (evt.type === 'sse:delta') {
+                setTestLiveSnippet((prev) => `${prev}${evt.delta}`.replace(/\s+/g, ' ').slice(-120));
+              } else if (evt.type === 'sse:bill') {
+                setTestLiveBillWei(evt.composeBillWei);
+              } else if (evt.type === 'connector:pause') {
+                setMissingConnectors(evt.missing);
+                if (evt.missing[0]?.threadId) {
+                  setPausedTestThreadId(evt.missing[0].threadId);
+                }
+                setCredentialsModalOpen(true);
+              } else if (evt.type === 'input:pause') {
+                setMissingInputs(evt.missingInputs);
+                if (evt.missingInputs[0]?.threadId) {
+                  setPausedTestThreadId(evt.missingInputs[0].threadId);
+                }
+                setInputPromptOpen(true);
+              }
+            },
+          },
+        );
+        setTestResult(result);
+        setPausedTestThreadId(null);
+
+        const stepOutputs = new Map(result.steps.map((s) => [s.id, s.output]));
+        setFlow((curr) => ({
+          ...curr,
+          nodes: curr.nodes.map((node) =>
+            stepOutputs.has(node.id)
+              ? { ...node, data: { ...node.data, output: stepOutputs.get(node.id) } }
+              : node,
+          ),
+        }));
+      } catch (err) {
+        if (err instanceof Fault && err.code === 'CONNECTOR_REQUIRED' && err.missing?.length) {
+          setMissingConnectors(err.missing);
+          if (err.missing[0]?.threadId) {
+            setPausedTestThreadId(err.missing[0].threadId);
+          }
+          setCredentialsModalOpen(true);
+          setTestError(err.message);
+        } else if (
+          err instanceof Fault &&
+          err.code === 'INPUT_REQUIRED' &&
+          err.missingInputs?.length
+        ) {
+          setMissingInputs(err.missingInputs);
+          if (err.missingInputs[0]?.threadId) {
+            setPausedTestThreadId(err.missingInputs[0].threadId);
+          }
+          setInputPromptOpen(true);
+          setTestError(err.message);
+        } else {
+          setTestError(err instanceof Error ? err.message : 'Test run failed.');
+        }
+      } finally {
+        setRunningNodeId(null);
+        setTesting(false);
+        void refreshSession();
+      }
+    },
+    [
+      flow,
+      user,
+      openAuthModal,
+      getRunSession,
+      refreshSession,
+      testInput,
+      testAttachments,
+      testCoordinator,
+      dryTest,
+      setFlow,
+    ],
+  );
+
 }
