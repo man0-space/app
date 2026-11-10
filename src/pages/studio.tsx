@@ -1000,4 +1000,267 @@ function StudioInner({
     ],
   );
 
+  const subjectAddress = spendingAddress ?? user?.userAddress ?? null;
+
+  const connectorTopologyKey = useMemo(
+    () =>
+      flow.nodes
+        .filter((n) => n.data.kind === 'connector')
+        .map((n) => `${n.id}:${n.data.entry?.id ?? ''}`)
+        .join('|'),
+    [flow.nodes],
+  );
+
+  const refreshStudioConnectors = useCallback(async () => {
+    if (!subjectAddress || !connectorTopologyKey) {
+      setConnectorAuthByNodeId({});
+      setProactiveMissingConnectors([]);
+      return;
+    }
+    const checked = await checkWorkflowConnectors(subjectAddress, flow.nodes).catch(() => null);
+    if (!checked) return;
+    setConnectorAuthByNodeId(checked.authStateByNodeId);
+    setProactiveMissingConnectors(checked.missing);
+  }, [connectorTopologyKey, flow.nodes, subjectAddress]);
+
+  useEffect(() => {
+    void refreshStudioConnectors();
+  }, [refreshStudioConnectors]);
+
+  const effectiveMissingConnectors = useMemo<MissingConnectorRequirement[]>(() => {
+    const merged: MissingConnectorRequirement[] = [...missingConnectors];
+    for (const item of proactiveMissingConnectors) {
+      const exists = merged.some(
+        (m) =>
+          m.entryId === item.entryId ||
+          (m.slug && item.slug && m.slug.toLowerCase() === item.slug.toLowerCase()),
+      );
+      if (!exists) merged.push(item);
+    }
+    return merged;
+  }, [missingConnectors, proactiveMissingConnectors]);
+
+  const handleStudioConnectClick = useCallback(
+    (_nodeId: string) => {
+      if (!user) {
+        openAuthModal();
+        return;
+      }
+      setCredentialsModalOpen(true);
+    },
+    [openAuthModal, user],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+
+      if (key === 's') {
+        event.preventDefault();
+        void handleSaveDraft();
+        return;
+      }
+
+      if (key === 'n') {
+        event.preventDefault();
+        if (mode !== 'canvas') setMode('canvas');
+        const anchorId =
+          selectedId ??
+          (flow.nodes.length > 0 ? flow.nodes[flow.nodes.length - 1]!.id : null);
+        openCatalogForInsertion(anchorId, anchorId ? 'right' : null, 'model');
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const isTextInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if (!isTextInput && key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) handleRedo();
+        else handleUndo();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+  }, [
+    handleSaveDraft,
+    mode,
+    setMode,
+    selectedId,
+    flow.nodes,
+    openCatalogForInsertion,
+    handleRedo,
+    handleUndo,
+  ]);
+
+  const handleCancelVibe = useCallback(() => {
+    vibeAbortRef.current?.abort();
+    vibeAbortRef.current = null;
+    setVibeBusy(false);
+    setVibeStatus(null);
+    setGeneratingBanner(false);
+  }, []);
+
+  const handleGenerateFromVibe = useCallback(
+    async (prompt: string) => {
+      const cleanPrompt = prompt.trim();
+      if (!cleanPrompt || vibeBusy) return;
+      if (!user || !authenticated()) {
+        openAuthModal();
+        return;
+      }
+
+      vibeAbortRef.current?.abort();
+      const controller = new AbortController();
+      vibeAbortRef.current = controller;
+
+      const snapshotBefore = flow;
+      setPast((p) => [...p.slice(-24), snapshotBefore]);
+      setFuture([]);
+
+      setVibeBusy(true);
+      setVibeError(null);
+      setVibePreview('');
+      setVibeStatus('Architecting workflow...');
+
+      let workflowReadyHandled = false;
+      const persistReadyDraft = (targetFlow: Flow) => {
+        if (
+          user?.consented &&
+          user.userAddress &&
+          authenticated() &&
+          !(openedFromWorkspaceId && openedFromWorkspaceId === targetFlow.id) &&
+          hasWipContent(targetFlow)
+        ) {
+          const serialized = JSON.stringify(targetFlow);
+          lastSyncedDraftJsonRef.current = serialized;
+          void api.draft(targetFlow).catch(() => {
+            lastSyncedDraftJsonRef.current = null;
+          });
+        }
+      };
+
+      try {
+        const done = await api.streamVibe({
+          prompt: cleanPrompt,
+          flow,
+          history: vibeHistory,
+          signal: controller.signal,
+          onEvent: (evt) => {
+            if (evt.type === 'status') {
+              setVibeStatus(evt.text);
+            } else if (evt.type === 'delta') {
+              setVibePreview((prev) => prev + evt.text);
+            } else if (evt.type === 'banner_start') {
+              setGeneratingBanner(true);
+            } else if (evt.type === 'patch') {
+              if (evt.patch.op === 'set_banner') {
+                setGeneratingBanner(false);
+              }
+              setFlow((curr) => applyVibePatchToFlow(curr, evt.patch));
+            } else if (evt.type === 'workflow_ready') {
+              workflowReadyHandled = true;
+              manualDragRef.current = false;
+              lastAutoLayoutKeyRef.current = '';
+              setFlow((curr) => {
+                const arranged = layout(
+                  { ...evt.flow, banner: curr.banner ?? evt.flow.banner },
+                  {
+                    width: planeSize.width,
+                    height: planeSize.height,
+                    topReserve: 66,
+                    bottomReserve: 96,
+                  },
+                );
+                persistReadyDraft(arranged);
+                return arranged;
+              });
+              setVibeHistory((prev) => [
+                ...prev.slice(-16),
+                { role: 'user', content: cleanPrompt },
+                ...(evt.text ? [{ role: 'assistant' as const, content: evt.text }] : []),
+              ]);
+              setVibeBusy(false);
+              setVibeStatus(null);
+              setMode('canvas');
+              setSelectedId(null);
+              setRightPanel('overview');
+              setOverviewOpen(!isCompactCanvasViewport());
+              window.setTimeout(() => {
+                fitStudioCanvas(240);
+              }, 60);
+            }
+          },
+        });
+
+        if (done) {
+          if (!workflowReadyHandled) {
+            manualDragRef.current = false;
+            lastAutoLayoutKeyRef.current = '';
+            const arrangedDone = layout(done.flow, {
+              width: planeSize.width,
+              height: planeSize.height,
+              topReserve: 66,
+              bottomReserve: 96,
+            });
+            setFlow(arrangedDone);
+            setVibeHistory((prev) => [
+              ...prev.slice(-16),
+              { role: 'user', content: cleanPrompt },
+              ...(done.text ? [{ role: 'assistant' as const, content: done.text }] : []),
+            ]);
+            persistReadyDraft(arrangedDone);
+            setMode('canvas');
+            setSelectedId(null);
+            setRightPanel('overview');
+            setOverviewOpen(!isCompactCanvasViewport());
+            window.setTimeout(() => {
+              fitStudioCanvas(240);
+            }, 60);
+          } else if (done.flow.banner) {
+            setFlow((curr) => {
+              if (curr.banner === done.flow.banner) return curr;
+              const withBanner = {
+                ...curr,
+                banner: done.flow.banner,
+                modified: new Date().toISOString(),
+              };
+              persistReadyDraft(withBanner);
+              return withBanner;
+            });
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setVibeError(err instanceof Error ? err.message : 'Vibe generation failed.');
+        }
+      } finally {
+        if (vibeAbortRef.current === controller) {
+          vibeAbortRef.current = null;
+        }
+        setVibeBusy(false);
+        setVibeStatus(null);
+        setGeneratingBanner(false);
+      }
+    },
+    [
+      vibeBusy,
+      user,
+      openAuthModal,
+      flow,
+      vibeHistory,
+      openedFromWorkspaceId,
+      setFlow,
+      setMode,
+      planeSize.width,
+      planeSize.height,
+      fitStudioCanvas,
+    ],
+  );
+
 }
