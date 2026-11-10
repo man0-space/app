@@ -579,4 +579,212 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     [applyRunOutcomeError, handleStreamEvent, onNotify, refreshSession, refreshThreads],
   );
 
+  const hydrateThread = useCallback(
+    (
+      thread: Thread,
+      targetWorkflow: Listing,
+      options?: { autoOpenModals?: boolean },
+    ) => {
+      streamAbortRef.current?.abort();
+      setActiveThreadId(thread.threadId);
+      setPrompt(thread.prompt || '');
+      setAttachments((thread.attachments as WorkflowAttachment[]) ?? []);
+      if (thread.coordinator) {
+        setRunnerCoordinator(thread.coordinator);
+      }
+      setDryRun(Boolean(thread.dry));
+      setLiveStepOutputs(thread.stepOutputs ?? {});
+      setLiveStepStreams({});
+      setLiveCoordinatorStream('');
+      setLiveActivities([]);
+      setActiveTab('final');
+      setOutputDialogOpen(false);
+
+      const nextExecution = (thread.execution as Execution | null | undefined) ?? null;
+      setExecution(nextExecution);
+      setLiveBills(nextExecution?.bills ?? []);
+      setLiveComposeBillWei(nextExecution?.composeBillWei ?? '0');
+
+      const nextMissingInputs =
+        (thread.missingInputs as unknown as MissingInputRequirement[]) ?? [];
+      const nextMissingConnectors =
+        (thread.missingConnectors as unknown as MissingConnectorRequirement[]) ?? [];
+
+      if (thread.status === 'input_required') {
+        setRunning(false);
+        setRunningStepId(null);
+        setPausedThreadId(thread.threadId);
+        setMissingInputs(nextMissingInputs);
+        setMissingConnectors([]);
+        setCredentialsModalOpen(false);
+        setInputPromptOpen(options?.autoOpenModals !== false && nextMissingInputs.length > 0);
+        setRunError(
+          thread.error ||
+          nextMissingInputs[0]?.reason ||
+          'Additional input is required to continue this workflow.',
+        );
+      } else if (thread.status === 'connector_required') {
+        setRunning(false);
+        setRunningStepId(null);
+        setPausedThreadId(thread.threadId);
+        setMissingConnectors(nextMissingConnectors);
+        setMissingInputs([]);
+        setInputPromptOpen(false);
+        setCredentialsModalOpen(
+          options?.autoOpenModals !== false && nextMissingConnectors.length > 0,
+        );
+        setRunError(thread.error || 'Connect required accounts to continue this workflow.');
+      } else if (thread.status === 'running') {
+        setPausedThreadId(null);
+        setMissingInputs([]);
+        setMissingConnectors([]);
+        setInputPromptOpen(false);
+        setCredentialsModalOpen(false);
+        setRunError(null);
+        const fallbackRunningNodeId =
+          targetWorkflow.nodes.find((n) => !thread.stepOutputs?.[n.id])?.id ?? null;
+        void attachToRunningThread(
+          targetWorkflow.id,
+          thread.threadId,
+          thread.runningStepId ?? fallbackRunningNodeId,
+        );
+      } else if (thread.status === 'failed') {
+        setRunning(false);
+        setRunningStepId(null);
+        setPausedThreadId(null);
+        setMissingInputs([]);
+        setMissingConnectors([]);
+        setInputPromptOpen(false);
+        setCredentialsModalOpen(false);
+        setRunError(thread.error || 'Workflow execution failed.');
+      } else {
+        setRunning(false);
+        setRunningStepId(null);
+        setPausedThreadId(null);
+        setMissingInputs([]);
+        setMissingConnectors([]);
+        setInputPromptOpen(false);
+        setCredentialsModalOpen(false);
+        setRunError(null);
+      }
+    },
+    [attachToRunningThread, user?.userAddress],
+  );
+
+  const handleStartNewThread = useCallback(() => {
+    streamAbortRef.current?.abort();
+    setActiveThreadId(null);
+    setPausedThreadId(null);
+    setPrompt('');
+    setAttachments([]);
+    setLiveStepOutputs({});
+    setLiveStepStreams({});
+    setLiveCoordinatorStream('');
+    setLiveActivities([]);
+    setLiveBills([]);
+    setLiveComposeBillWei('0');
+    setExecution(null);
+    setRunError(null);
+    setMissingInputs([]);
+    setMissingConnectors([]);
+    setInputPromptOpen(false);
+    setCredentialsModalOpen(false);
+    setOutputDialogOpen(false);
+    setRunning(false);
+    setRunningStepId(null);
+    setActiveTab('final');
+  }, [user?.userAddress, workflowId]);
+
+  const loadWorkflow = useCallback(async () => {
+    if (!workflowId) {
+      setWorkflow(null);
+      setLoadError('Workflow not found.');
+      setLoading(false);
+      return;
+    }
+
+    streamAbortRef.current?.abort();
+    hydratedScopeRef.current = null;
+    setLoading(true);
+    setAccessDenied(false);
+    setLoadError(null);
+    setExecution(null);
+    setRunning(false);
+    setRunningStepId(null);
+    setPausedThreadId(null);
+    setActiveThreadId(null);
+    setThreads([]);
+    setPrompt('');
+    setRunError(null);
+    setMissingInputs([]);
+    setMissingConnectors([]);
+    setInputPromptOpen(false);
+    setCredentialsModalOpen(false);
+    setLiveStepOutputs({});
+    setLiveStepStreams({});
+    setLiveCoordinatorStream('');
+    setLiveActivities([]);
+    setLiveBills([]);
+    setLiveComposeBillWei('0');
+    setAttachments([]);
+    setSelectedNodeId(null);
+    setOutputDialogOpen(false);
+    setActiveTab('final');
+
+    try {
+      const fetched = await api.workflow(workflowId);
+      setWorkflow(fetched);
+      setRunnerCoordinator(fetched.coordinator ?? null);
+    } catch (err) {
+      setWorkflow(null);
+      if (err instanceof Fault && (err.status === 401 || err.status === 403)) {
+        setAccessDenied(true);
+      } else {
+        setLoadError(err instanceof Error ? err.message : 'Workflow unavailable.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [workflowId]);
+
+  useEffect(() => {
+    void loadWorkflow();
+  }, [loadWorkflow]);
+
+  useEffect(() => {
+    if (accessDenied && user?.userAddress) {
+      void loadWorkflow();
+    }
+  }, [accessDenied, user?.userAddress, loadWorkflow]);
+
+  useEffect(() => {
+    if (!workflow || !user?.userAddress) {
+      setThreads([]);
+      return;
+    }
+    const scope = `${user.userAddress.toLowerCase()}:${workflow.id}`;
+    if (hydratedScopeRef.current === scope) return;
+    hydratedScopeRef.current = scope;
+
+    let cancelled = false;
+    void api
+      .workflowThreads(workflow.id)
+      .then((list) => {
+        if (cancelled) return;
+        setThreads(list);
+        if (list.length === 0) return;
+        const explicitThreadId = readExplicitUrlThreadId();
+        if (!explicitThreadId) return;
+        const matched = list.find((item) => item.threadId === explicitThreadId);
+        if (matched) {
+          hydrateThread(matched, workflow, { autoOpenModals: true });
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateThread, user?.userAddress, workflow]);
+
 }
