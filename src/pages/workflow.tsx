@@ -1078,4 +1078,233 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     }
   };
 
+  const subjectAddress = spendingAddress ?? user?.userAddress ?? null;
+
+  const refreshConnectorStatus = useCallback(async () => {
+    if (!workflow || !subjectAddress) {
+      setConnectorAuthByNodeId({});
+      setProactiveMissingConnectors([]);
+      return;
+    }
+    const checked = await checkWorkflowConnectors(subjectAddress, workflow.nodes).catch(
+      () => null,
+    );
+    if (!checked) return;
+    setConnectorAuthByNodeId(checked.authStateByNodeId);
+    setProactiveMissingConnectors(checked.missing);
+  }, [subjectAddress, workflow]);
+
+  useEffect(() => {
+    void refreshConnectorStatus();
+  }, [refreshConnectorStatus]);
+
+  const effectiveMissingConnectors = useMemo<MissingConnectorRequirement[]>(() => {
+    const merged: MissingConnectorRequirement[] = [...missingConnectors];
+    for (const item of proactiveMissingConnectors) {
+      const exists = merged.some(
+        (m) =>
+          m.entryId === item.entryId ||
+          (m.slug && item.slug && m.slug.toLowerCase() === item.slug.toLowerCase()),
+      );
+      if (!exists) merged.push(item);
+    }
+    return merged;
+  }, [missingConnectors, proactiveMissingConnectors]);
+
+  const handleNodeConnectClick = useCallback(
+    (_nodeId: string) => {
+      if (!user) {
+        openAuthModal();
+        return;
+      }
+      setCredentialsModalOpen(true);
+    },
+    [openAuthModal, user],
+  );
+
+  const stepStatusByNodeId = useMemo(() => {
+    const map = new Map<string, StepExecStatus>();
+    if (!workflow) return map;
+
+    const pausedStepIds = new Set<string>(
+      missingInputs.map((item) => item.stepId).filter((v): v is string => Boolean(v)),
+    );
+    for (const mc of missingConnectors) {
+      for (const node of workflow.nodes) {
+        const entryId = node.data.entry?.id ?? '';
+        if (entryId === mc.entryId || (mc.slug && entryId.endsWith(`:${mc.slug}`))) {
+          pausedStepIds.add(node.id);
+        }
+      }
+    }
+
+    const firstUncompletedNodeId =
+      workflow.nodes.find(
+        (n) =>
+          !execution?.steps.some((s) => s.id === n.id) &&
+          !Object.prototype.hasOwnProperty.call(liveStepOutputs, n.id),
+      )?.id ?? workflow.nodes[0]?.id;
+
+    for (const node of workflow.nodes) {
+      const settled = execution?.steps.find((s) => s.id === node.id);
+      const hasLive = Object.prototype.hasOwnProperty.call(liveStepOutputs, node.id);
+      if (running && runningStepId === node.id) {
+        map.set(node.id, 'executing');
+      } else if (pausedThreadId && pausedStepIds.has(node.id)) {
+        map.set(node.id, 'paused');
+      } else if (settled || hasLive) {
+        map.set(node.id, 'done');
+      } else if (
+        !running &&
+        runError &&
+        !pausedThreadId &&
+        !execution &&
+        node.id === firstUncompletedNodeId
+      ) {
+        map.set(node.id, 'failed');
+      } else {
+        map.set(node.id, 'idle');
+      }
+    }
+    return map;
+  }, [
+    execution,
+    liveStepOutputs,
+    missingConnectors,
+    missingInputs,
+    pausedThreadId,
+    runError,
+    running,
+    runningStepId,
+    workflow,
+  ]);
+
+  const stepPriceByNodeId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!workflow) return map;
+    for (const node of workflow.nodes) {
+      const settledStep = execution?.steps.find((s) => s.id === node.id);
+      if (settledStep?.billWei && BigInt(settledStep.billWei) > 0n) {
+        map.set(node.id, formatMicroUsdc(settledStep.billWei));
+        continue;
+      }
+      const entryId = node.data.entry?.id?.toLowerCase() ?? '';
+      const entryTail = entryId.split(':').pop() ?? '';
+      const entryName = node.data.entry?.name?.toLowerCase() ?? '';
+      let liveWei = 0n;
+      for (const bill of liveBills) {
+        if (bill.category === 'coordinator') continue;
+        if (bill.stepId) {
+          if (bill.stepId === node.id) {
+            liveWei += BigInt(bill.amountWei || '0');
+          }
+          continue;
+        }
+        if (bill.category !== node.data.kind) continue;
+        const subj = bill.subject?.toLowerCase() ?? '';
+        const bName = bill.name.toLowerCase();
+        const matches =
+          (entryId && (subj === entryId || subj.endsWith(`:${entryId}`))) ||
+          (entryTail.length >= 3 && (subj === entryTail || subj.endsWith(`:${entryTail}`))) ||
+          (entryName && bName === entryName);
+        if (matches) {
+          liveWei += BigInt(bill.amountWei || '0');
+        }
+      }
+      if (liveWei > 0n) {
+        map.set(node.id, formatMicroUsdc(liveWei.toString()));
+      }
+    }
+    return map;
+  }, [execution, liveBills, workflow]);
+
+  const stepLiveStatusByNodeId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!workflow) return map;
+    for (const act of liveActivities) {
+      if (act.stepId) {
+        map.set(act.stepId, act.summary || act.title);
+      }
+    }
+    for (const node of workflow.nodes) {
+      const delta = liveStepStreams[node.id]?.replace(/\s+/g, ' ').trim();
+      if (delta) {
+        map.set(node.id, delta.slice(-84));
+      }
+    }
+    return map;
+  }, [liveActivities, liveStepStreams, workflow]);
+
+  const activeHandlesByNode = useMemo(() => {
+    if (!adaptiveCanvas) return new Map<string, string[]>();
+    return collectActiveHandlesByNodeId(adaptiveCanvas.nodes, adaptiveCanvas.edges);
+  }, [adaptiveCanvas]);
+
+  const nodesForCanvas = useMemo<Block[]>(() => {
+    if (!adaptiveCanvas) return [];
+    return adaptiveCanvas.nodes.map((node, idx) => {
+      const execStatus = stepStatusByNodeId.get(node.id) ?? 'idle';
+      return {
+        ...node,
+        selected: selectedNodeId === node.id,
+        data: {
+          ...node.data,
+          readOnly: true,
+          stepIndex: idx + 1,
+          execStatus,
+          running: execStatus === 'executing',
+          priceLabel: stepPriceByNodeId.get(node.id),
+          liveStatus: stepLiveStatusByNodeId.get(node.id),
+          connectorAuthState: connectorAuthByNodeId[node.id],
+          onConnectClick: handleNodeConnectClick,
+          activeHandles: activeHandlesByNode.get(node.id),
+        },
+      };
+    });
+  }, [
+    activeHandlesByNode,
+    adaptiveCanvas,
+    connectorAuthByNodeId,
+    handleNodeConnectClick,
+    selectedNodeId,
+    stepLiveStatusByNodeId,
+    stepPriceByNodeId,
+    stepStatusByNodeId,
+  ]);
+
+  const edgesWithState = useMemo<Link[]>(() => {
+    if (!workflow || !adaptiveCanvas) return [];
+    return adaptiveCanvas.edges.map((edge) => {
+      const sourceKind = workflow.nodes.find((n) => n.id === edge.source)?.data.kind ?? 'model';
+      const sourceStatus = stepStatusByNodeId.get(edge.source) ?? 'idle';
+      const targetStatus = stepStatusByNodeId.get(edge.target) ?? 'idle';
+      const active =
+        running &&
+        (sourceStatus === 'executing' ||
+          (sourceStatus === 'done' && targetStatus === 'executing'));
+      const done = sourceStatus === 'done' && targetStatus === 'done';
+      const wireData: WireEdgeData = {
+        kind: sourceKind,
+        readOnly: true,
+        active,
+        done,
+      };
+      return {
+        ...edge,
+        type: 'wire',
+        data: wireData,
+      };
+    });
+  }, [adaptiveCanvas, running, stepStatusByNodeId, workflow]);
+
+  const rootAcceptedInputs = useMemo(() => {
+    if (!workflow || workflow.nodes.length === 0) return undefined;
+    const incomingTargets = new Set(workflow.edges.map((e) => e.target));
+    const rootNode = workflow.nodes.find((n) => !incomingTargets.has(n.id)) ?? workflow.nodes[0];
+    const entryInputs = rootNode?.data.entry?.input;
+    if (!entryInputs || entryInputs.length === 0) return undefined;
+    const nonText = entryInputs.filter((m) => m !== 'text');
+    return nonText.length > 0 ? entryInputs : undefined;
+  }, [workflow]);
+
 }
