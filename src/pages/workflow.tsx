@@ -208,3 +208,92 @@ function ThreadSelector({
     </div>
   );
 }
+
+function billCategoryLabel(category: WorkflowBillItem['category']): string {
+  switch (category) {
+    case 'coordinator':
+      return 'COORDINATOR';
+    case 'model':
+      return 'MODEL';
+    case 'connector':
+      return 'CONNECTOR';
+    case 'agent':
+      return 'AGENT';
+  }
+}
+
+function ReceiptBillsFold({ bills }: { bills: WorkflowBillItem[] }) {
+  if (bills.length === 0) return null;
+  return (
+    <details className="wf-bills-fold">
+      <summary className="wf-bills-summary">
+        <span>Itemized compute ({bills.length})</span>
+      </summary>
+      <ul className="wf-bills-list" role="list">
+        {bills.map((bill, idx) => (
+          <li key={`${bill.category}:${bill.subject ?? bill.name}:${idx}`} className="wf-bill-row">
+            <span className={`wf-bill-kind is-${bill.category}`}>
+              {billCategoryLabel(bill.category)}
+            </span>
+            <span className="wf-bill-label">{bill.name}</span>
+            <strong className="wf-bill-amount">{formatMicroUsdc(bill.amountWei)}</strong>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+interface ExecutionBadgesProps {
+  showOutput: boolean;
+  outputActive: boolean;
+  onToggleOutput: () => void;
+  proofUrl?: string | null;
+}
+
+function ExecutionBadges({
+  showOutput,
+  outputActive,
+  onToggleOutput,
+  proofUrl,
+}: ExecutionBadgesProps) {
+  if (!showOutput && !proofUrl) return null;
+  return (
+    <div className="wf-result-badges" role="group" aria-label="Execution output and proof">
+      {showOutput ? (
+        <Tooltip label="Execution output">
+          <button
+            type="button"
+            className={`wf-result-badge is-output ${outputActive ? 'is-active' : ''}`.trim()}
+            aria-pressed={outputActive}
+            onClick={onToggleOutput}
+          >
+            <Sparkles size={12} aria-hidden="true" />
+            <span className="wf-result-badge-label">Output</span>
+          </button>
+        </Tooltip>
+      ) : null}
+      {proofUrl ? (
+        <Tooltip label="IPFS Execution Proof">
+          <a
+            href={proofUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="wf-result-badge is-proof"
+          >
+            <ShieldCheck size={12} aria-hidden="true" />
+            <span className="wf-result-badge-label">Proof</span>
+          </a>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
+
+export function WorkflowPage(props: WorkflowPageProps) {
+  return (
+    <ReactFlowProvider>
+      <WorkflowInner {...props} />
+    </ReactFlowProvider>
+  );
+}
