@@ -787,4 +787,295 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     };
   }, [hydrateThread, user?.userAddress, workflow]);
 
+  const bucketedTopReserve = Math.round(canvasReserves.top / 16) * 16;
+  const bucketedBottomReserve = Math.round(canvasReserves.bottom / 20) * 20;
+
+  const adaptiveCanvas = useMemo(() => {
+    if (!workflow) return null;
+    return computeAdaptiveWorkflowLayout(workflow.nodes, workflow.edges, {
+      width: planeSize.width,
+      height: planeSize.height,
+      topReserve: bucketedTopReserve,
+      bottomReserve: bucketedBottomReserve,
+    });
+  }, [bucketedBottomReserve, bucketedTopReserve, planeSize.height, planeSize.width, workflow]);
+
+  const fitWorkflowCanvas = useCallback(
+    (duration = 180) => {
+      const inst = instanceRef.current;
+      if (!inst || !adaptiveCanvas || adaptiveCanvas.nodes.length === 0) return;
+      const measured = new Map<string, { width: number; height: number }>();
+      for (const n of adaptiveCanvas.nodes) {
+        const internal = inst.getInternalNode(n.id);
+        const w = internal?.measured?.width;
+        const h = internal?.measured?.height;
+        if (w && h) measured.set(n.id, { width: w, height: h });
+      }
+      const vp = computeSafeCanvasViewport(
+        adaptiveCanvas.nodes,
+        {
+          width: planeSize.width,
+          height: planeSize.height,
+          topReserve: canvasReserves.top,
+          bottomReserve: canvasReserves.bottom,
+        },
+        measured,
+      );
+      void inst.setViewport(vp, { duration });
+    },
+    [
+      adaptiveCanvas,
+      canvasReserves.bottom,
+      canvasReserves.top,
+      planeSize.height,
+      planeSize.width,
+    ],
+  );
+
+  useEffect(() => {
+    if (!workflow || !adaptiveCanvas) return;
+    const frame = requestAnimationFrame(() => {
+      fitWorkflowCanvas(180);
+    });
+    const refineTimer = window.setTimeout(() => {
+      fitWorkflowCanvas(140);
+    }, 70);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(refineTimer);
+    };
+  }, [
+    adaptiveCanvas,
+    canvasReserves.bottom,
+    canvasReserves.top,
+    fitWorkflowCanvas,
+    planeSize.height,
+    planeSize.width,
+    sidePanelOpen,
+    workflow,
+  ]);
+
+  const isOwner = Boolean(
+    workflow &&
+    user?.userAddress &&
+    workflow.userAddress &&
+    user.userAddress.toLowerCase() === workflow.userAddress.toLowerCase(),
+  );
+
+  const canEditBanner = Boolean(isOwner && workflow && !workflow.published);
+
+  const persistWorkflowBanner = useCallback(
+    async (nextBanner: string | null) => {
+      if (!workflow || workflow.published) return;
+      const payload: Flow = {
+        id: workflow.id,
+        name: workflow.name,
+        brief: workflow.brief ?? '',
+        banner: nextBanner,
+        ...(workflow.tasks?.length ? { tasks: workflow.tasks } : {}),
+        ...(workflow.coordinator !== undefined ? { coordinator: workflow.coordinator } : {}),
+        nodes: workflow.nodes,
+        edges: workflow.edges,
+        modified: workflow.modified,
+      };
+      const saved = await api
+        .save(payload, workflow.modified)
+        .catch(() => api.save({ ...payload, modified: new Date().toISOString() }));
+      setWorkflow(saved);
+    },
+    [workflow],
+  );
+
+  const handleWorkflowBannerUpload = useCallback(
+    async (file: File) => {
+      if (!canEditBanner) return;
+      setUploadingBanner(true);
+      try {
+        const bannerUrl = await uploadMediaImage(file, 'workflow-banner');
+        await persistWorkflowBanner(bannerUrl);
+        onNotify('Updated workflow banner');
+      } catch (err) {
+        onNotify(err instanceof Error ? err.message : 'Unable to upload banner');
+      } finally {
+        setUploadingBanner(false);
+      }
+    },
+    [canEditBanner, onNotify, persistWorkflowBanner],
+  );
+
+  const handleWorkflowBannerGenerate = useCallback(async () => {
+    if (!workflow || !canEditBanner) return;
+    if (!user || !authenticated()) {
+      openAuthModal();
+      return;
+    }
+    setGeneratingBanner(true);
+    try {
+      const logos = buildBannerBrandLogos(workflow.nodes);
+      const generated = await api.generateBanner({
+        title: workflow.name.trim() || 'man0 Workflow',
+        description:
+          workflow.terms?.description?.trim() ||
+          workflow.brief?.trim() ||
+          workflow.nodes.map((n) => n.data.label).join(', ') ||
+          'Autonomous multi-step AI and Web3 workflow.',
+        ...(logos.length > 0 ? { logos } : {}),
+      });
+      await persistWorkflowBanner(generated.imageUrl);
+      onNotify('Generated workflow banner');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Unable to generate banner');
+    } finally {
+      setGeneratingBanner(false);
+    }
+  }, [canEditBanner, openAuthModal, onNotify, persistWorkflowBanner, user, workflow]);
+
+  const handleWorkflowBannerRemove = useCallback(async () => {
+    if (!canEditBanner) return;
+    setUploadingBanner(true);
+    try {
+      await persistWorkflowBanner(null);
+      onNotify('Cleared workflow banner');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Unable to clear banner');
+    } finally {
+      setUploadingBanner(false);
+    }
+  }, [canEditBanner, onNotify, persistWorkflowBanner]);
+
+  const isLockedUnpublished = Boolean(
+    accessDenied || (workflow && !workflow.published && !isOwner),
+  );
+
+  const handleBack = () => {
+    if (isOwner && workflow && !workflow.published) {
+      navigateTo('/workspace');
+      return;
+    }
+    navigateTo('/market');
+  };
+
+  const handleRun = async (
+    event?: FormEvent,
+    overrides?: {
+      prompt?: string;
+      attachments?: WorkflowAttachment[];
+      threadId?: string;
+      connectorDecisions?: ConnectorDecisionItem[];
+    },
+  ) => {
+    event?.preventDefault();
+    if (!workflow || isLockedUnpublished) return;
+
+    if (!user) {
+      openAuthModal();
+      return;
+    }
+
+    const effectivePrompt = (overrides?.prompt ?? prompt).trim();
+    const effectiveAttachments = overrides?.attachments ?? attachments;
+    const completedPriorCount = Object.keys(liveStepOutputs).length;
+    const hasIncompletePriorSteps =
+      !execution &&
+      Boolean(activeThreadId) &&
+      completedPriorCount > 0 &&
+      completedPriorCount < workflow.nodes.length;
+    const resumeThreadId =
+      overrides?.threadId?.trim() ||
+      pausedThreadId ||
+      (hasIncompletePriorSteps ? activeThreadId ?? undefined : undefined);
+    const targetThreadId = resumeThreadId || `wf-${workflow.id}-${crypto.randomUUID()}`;
+    const activeCoordinator = runnerCoordinator ?? workflow.coordinator ?? null;
+
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
+    setRunning(true);
+    setRunError(null);
+    setMissingConnectors([]);
+    setCredentialsModalOpen(false);
+    setMissingInputs([]);
+    setInputPromptOpen(false);
+    setActiveThreadId(targetThreadId);
+
+    if (!resumeThreadId) {
+      setPausedThreadId(null);
+      setLiveStepOutputs({});
+      setLiveStepStreams({});
+      setLiveCoordinatorStream('');
+      setLiveActivities([]);
+      setLiveBills([]);
+      setLiveComposeBillWei('0');
+      setExecution(null);
+    } else {
+      setLiveCoordinatorStream('');
+    }
+    const firstPendingStepId = resumeThreadId
+      ? (workflow.nodes.find((n) => !Object.prototype.hasOwnProperty.call(liveStepOutputs, n.id))
+        ?.id ??
+        workflow.nodes[workflow.nodes.length - 1]?.id ??
+        null)
+      : (workflow.nodes[0]?.id ?? null);
+    setRunningStepId(firstPendingStepId);
+    try {
+      const session = await getRunSession();
+      if (!session) {
+        setRunning(false);
+        setRunningStepId(null);
+        openAuthModal();
+        setRunError('Approve a session limit in Account before running.');
+        return;
+      }
+
+      let res: Execution;
+      try {
+        res = await api.runWorkflow(
+          workflow.id,
+          effectivePrompt || workflow.brief || undefined,
+          session,
+          {
+            dry: dryRun,
+            threadId: targetThreadId,
+            ...(effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
+            ...(activeCoordinator ? { coordinator: activeCoordinator } : {}),
+            ...(overrides?.connectorDecisions?.length
+              ? { connectorDecisions: overrides.connectorDecisions }
+              : {}),
+            signal: controller.signal,
+            onEvent: handleStreamEvent,
+          },
+        );
+      } catch (runErr) {
+        if (controller.signal.aborted || !isRecoverableStreamError(runErr)) {
+          throw runErr;
+        }
+        res = await api.watchWorkflowThread(
+          workflow.id,
+          targetThreadId,
+          handleStreamEvent,
+          controller.signal,
+        );
+      }
+      if (controller.signal.aborted) return;
+
+      setExecution(res);
+      setPausedThreadId(null);
+      setActiveTab('final');
+      setOutputDialogOpen(true);
+      onNotify(res.dry ? 'Dry run complete' : 'Run complete');
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      applyRunOutcomeError(err, targetThreadId);
+    } finally {
+      if (streamAbortRef.current === controller) {
+        setRunningStepId(null);
+        setRunning(false);
+        void refreshThreads(workflow.id);
+        void refreshSession();
+        void refreshConnectorStatus();
+      }
+    }
+  };
+
 }
