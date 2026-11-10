@@ -1263,4 +1263,874 @@ function StudioInner({
     ],
   );
 
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Block>[]) => {
+      if (changes.some((c) => c.type === 'position' && c.dragging)) {
+        manualDragRef.current = true;
+      }
+      setFlow((current) => {
+        const nextNodes = applyNodeChanges(changes, current.nodes);
+        const nextEdges = changes.some((c) => c.type === 'position')
+          ? assignSmartEdgeHandles(nextNodes, current.edges)
+          : current.edges;
+        return {
+          ...current,
+          nodes: nextNodes,
+          edges: nextEdges,
+        };
+      });
+    },
+    [setFlow],
+  );
+
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange<Link>[]) => {
+      setFlow((current) => ({
+        ...current,
+        edges: applyEdgeChanges(changes, current.edges),
+      }));
+    },
+    [setFlow],
+  );
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) return;
+      try {
+        commitFlow((current) => connectFlow(current, connection.source, connection.target));
+      } catch (err) {
+        onNotify(err instanceof Error ? err.message : 'Invalid connection');
+      }
+    },
+    [commitFlow, onNotify],
+  );
+
+  const smartEdges = useMemo(
+    () => assignSmartEdgeHandles(flow.nodes, flow.edges),
+    [flow.edges, flow.nodes],
+  );
+
+  const activeHandlesByNode = useMemo(
+    () => collectActiveHandlesByNodeId(flow.nodes, smartEdges),
+    [flow.nodes, smartEdges],
+  );
+
+  const connectedDirectionsByNode = useMemo(
+    () => collectConnectedDirectionsByNodeId(flow.nodes, smartEdges),
+    [flow.nodes, smartEdges],
+  );
+
+  const nodesForCanvas = useMemo<Block[]>(
+    () =>
+      flow.nodes.map((node) => {
+        const settledStep = testResult?.steps.find((s) => s.id === node.id);
+        const priceLabel =
+          settledStep?.billWei && BigInt(settledStep.billWei) > 0n
+            ? formatMicroUsdc(settledStep.billWei)
+            : undefined;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            running: runningNodeId === node.id,
+            priceLabel,
+            liveStatus: runningNodeId === node.id ? testLiveTitle ?? undefined : undefined,
+            connectorAuthState: connectorAuthByNodeId[node.id],
+            onConnectClick: handleStudioConnectClick,
+            onQuickAdd: handleQuickAdd,
+            activeHandles: activeHandlesByNode.get(node.id),
+            connectedDirections: connectedDirectionsByNode.get(node.id),
+            layoutMode: currentLayoutMode,
+          },
+        };
+      }),
+    [
+      flow.nodes,
+      runningNodeId,
+      testResult,
+      testLiveTitle,
+      connectorAuthByNodeId,
+      handleStudioConnectClick,
+      handleQuickAdd,
+      activeHandlesByNode,
+      connectedDirectionsByNode,
+      currentLayoutMode,
+    ],
+  );
+
+  const edgesWithState = useMemo<Link[]>(
+    () =>
+      smartEdges.map((edge) => {
+        const sourceKind =
+          flow.nodes.find((n) => n.id === edge.source)?.data.kind ?? 'model';
+        const wireData: WireEdgeData = {
+          kind: sourceKind,
+          active: runningNodeId === edge.source,
+        };
+        return {
+          ...edge,
+          type: 'wire',
+          data: wireData,
+        };
+      }),
+    [smartEdges, flow.nodes, runningNodeId],
+  );
+
+  const catalogContextLabel = useMemo(() => {
+    if (!pendingInsertion?.anchorNodeId || !pendingInsertion.direction) return null;
+    const anchor = flow.nodes.find((n) => n.id === pendingInsertion.anchorNodeId);
+    if (!anchor) return null;
+    return `${DIRECTION_LABEL[pendingInsertion.direction]} "${anchor.data.label}"`;
+  }, [pendingInsertion, flow.nodes]);
+
+  const showRightDrawer = Boolean(selectedNode || overviewOpen);
+
+  const activeMobilePocket: 'canvas' | 'catalog' | 'inspector' = catalogOpen
+    ? 'catalog'
+    : showRightDrawer
+      ? 'inspector'
+      : 'canvas';
+
+  const hudNode = (
+    <div ref={hudRef} className="studio-hud">
+      <div className="studio-hud-left stealth-glass" role="tablist" aria-label="Studio view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'vibe'}
+          className={`seg-btn ${mode === 'vibe' ? 'active' : ''}`}
+          onClick={() => setMode('vibe')}
+        >
+          VIBE
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'canvas'}
+          className={`seg-btn ${mode === 'canvas' ? 'active' : ''}`}
+          onClick={() => setMode('canvas')}
+        >
+          CANVAS
+        </button>
+      </div>
+
+      <div className="studio-hud-right stealth-glass" role="toolbar" aria-label="Canvas controls">
+        <Button
+          icon={<FilePlus2 size={14} />}
+          tooltip="New"
+          description="Reset canvas"
+          size="xs"
+          onClick={handleNewFlow}
+        />
+        <Button
+          icon={<Undo2 size={14} />}
+          tooltip="Back"
+          description="Undo (⌘Z)"
+          size="xs"
+          disabled={past.length === 0}
+          onClick={handleUndo}
+        />
+        <Button
+          icon={<Redo2 size={14} />}
+          tooltip="Forth"
+          description="Redo (⇧⌘Z)"
+          size="xs"
+          disabled={future.length === 0}
+          onClick={handleRedo}
+        />
+        <Button
+          icon={savingDraft ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}
+          tooltip="Save"
+          description="Save draft (⌘S)"
+          size="xs"
+          disabled={savingDraft}
+          onClick={() => void handleSaveDraft()}
+        />
+        <Button
+          icon={testing ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}
+          tooltip="Test run"
+          description="Run draft inline"
+          variant="primary"
+          size="xs"
+          active={rightPanel === 'test' && overviewOpen && !selectedNode}
+          onClick={openTestRunPanel}
+        />
+        {mode === 'canvas' ? (
+          <Button
+            icon={<PanelRight size={14} />}
+            tooltip={showRightDrawer ? 'Hide panel' : 'Workflow overview'}
+            size="xs"
+            active={showRightDrawer}
+            onClick={() => {
+              if (selectedNode) {
+                setSelectedId(null);
+                setOverviewOpen(false);
+              } else {
+                setRightPanel('overview');
+                setOverviewOpen((v) => !v);
+              }
+            }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="studio-container">
+      {mode === 'vibe' ? (
+        <div className="vibe-wrapper">
+          {hudNode}
+          <Vibe
+            brief={flow.brief ?? ''}
+            onChangeBrief={(nextBrief) =>
+              setFlow((curr) => ({
+                ...curr,
+                brief: nextBrief,
+                modified: new Date().toISOString(),
+              }))
+            }
+            onGenerate={(prompt) => void handleGenerateFromVibe(prompt)}
+            stepCount={flow.nodes.length}
+            onSwitchToCanvas={() => setMode('canvas')}
+            busy={vibeBusy}
+            statusText={vibeStatus}
+            streamPreview={vibePreview}
+            errorText={vibeError}
+            onCancel={handleCancelVibe}
+          />
+        </div>
+      ) : (
+        <div className="canvas-stage" data-pocket={activeMobilePocket}>
+          {catalogOpen ? (
+            <Catalog
+              entries={entries}
+              loading={catalogLoading}
+              errors={catalogErrors}
+              onRefresh={() => refreshCatalog(true)}
+              onAddEntry={handleAddEntry}
+              onClose={() => {
+                setCatalogOpen(false);
+                setPendingInsertion(null);
+              }}
+              initialTab={catalogTab}
+              contextLabel={catalogContextLabel}
+            />
+          ) : null}
+
+          <div ref={planeRef} className="canvas-plane">
+            {hudNode}
+
+            <ReactFlow<Block, Link>
+              nodes={nodesForCanvas}
+              edges={edgesWithState}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              onInit={(instance) => {
+                instanceRef.current = instance;
+                window.requestAnimationFrame(() => {
+                  fitStudioCanvas(0);
+                });
+              }}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={(_, node) => {
+                setSelectedId(node.id);
+                setToolboxOpen(false);
+              }}
+              onPaneClick={() => {
+                setSelectedId(null);
+                setToolboxOpen(false);
+              }}
+              minZoom={0.24}
+              maxZoom={1.5}
+              proOptions={{ hideAttribution: true }}
+              deleteKeyCode={['Backspace', 'Delete']}
+            />
+
+            {flow.nodes.length === 0 ? (
+              <div className="canvas-empty stealth-glass">
+                <Tooltip label="Add step" description="Choose Model, Connector, or Agent (⌘N)">
+                  <button
+                    type="button"
+                    className="empty-plus-btn"
+                    aria-label="Add first step"
+                    onClick={() => openCatalogForInsertion(null, null, 'model')}
+                  >
+                    <Plus size={18} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+                <div className="canvas-empty-actions" role="group" aria-label="Step categories">
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() => openCatalogForInsertion(null, null, 'model')}
+                  >
+                    <span className="dot-model" />
+                    <span>Model</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() => openCatalogForInsertion(null, null, 'connector')}
+                  >
+                    <span className="dot-connector" />
+                    <span>Connector</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() => openCatalogForInsertion(null, null, 'agent')}
+                  >
+                    <span className="dot-agent" />
+                    <span>Agent</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div ref={dockRef} className="canvas-dock">
+              {toolboxOpen ? (
+                <div
+                  className="toolbox-popover stealth-glass open"
+                  role="group"
+                  aria-label="Add step"
+                >
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() =>
+                      openCatalogForInsertion(
+                        selectedId ?? (flow.nodes[flow.nodes.length - 1]?.id ?? null),
+                        flow.nodes.length > 0 ? 'right' : null,
+                        'model',
+                      )
+                    }
+                  >
+                    <span className="dot-model" />
+                    <span>Model</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() =>
+                      openCatalogForInsertion(
+                        selectedId ?? (flow.nodes[flow.nodes.length - 1]?.id ?? null),
+                        flow.nodes.length > 0 ? 'right' : null,
+                        'connector',
+                      )
+                    }
+                  >
+                    <span className="dot-connector" />
+                    <span>Connector</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-pill"
+                    onClick={() =>
+                      openCatalogForInsertion(
+                        selectedId ?? (flow.nodes[flow.nodes.length - 1]?.id ?? null),
+                        flow.nodes.length > 0 ? 'right' : null,
+                        'agent',
+                      )
+                    }
+                  >
+                    <span className="dot-agent" />
+                    <span>Agent</span>
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="dock-bar stealth-glass">
+                <div className="dock-cluster">
+                  <Button
+                    icon={<PanelLeft size={14} />}
+                    tooltip={catalogOpen ? 'Hide catalog' : 'Catalog (⌘N)'}
+                    active={catalogOpen}
+                    size="xs"
+                    onClick={() => {
+                      if (catalogOpen) {
+                        setCatalogOpen(false);
+                        setPendingInsertion(null);
+                      } else {
+                        const anchorId =
+                          selectedId ??
+                          (flow.nodes.length > 0 ? flow.nodes[flow.nodes.length - 1]!.id : null);
+                        openCatalogForInsertion(anchorId, anchorId ? 'right' : null, 'model');
+                      }
+                    }}
+                  />
+                  <Button
+                    icon={<Minus size={14} />}
+                    tooltip="Zoom out"
+                    size="xs"
+                    onClick={() => void instanceRef.current?.zoomOut({ duration: 150 })}
+                  />
+                  <Button
+                    icon={<Maximize2 size={13} />}
+                    tooltip="Fit canvas"
+                    size="xs"
+                    onClick={() => fitStudioCanvas(200)}
+                  />
+                  <Button
+                    icon={<Plus size={14} />}
+                    tooltip="Zoom in"
+                    size="xs"
+                    onClick={() => void instanceRef.current?.zoomIn({ duration: 150 })}
+                  />
+                  <Button
+                    icon={<LayoutGrid size={13} />}
+                    tooltip="Auto-arrange"
+                    size="xs"
+                    onClick={handleAutoLayout}
+                  />
+                </div>
+
+                <div className="dock-telemetry">
+                  <span>
+                    {flow.nodes.length} {flow.nodes.length === 1 ? 'step' : 'steps'}
+                  </span>
+                </div>
+
+                <Tooltip label="Add step" description="Choose category">
+                  <button
+                    type="button"
+                    className={`plus-trigger ${toolboxOpen ? 'active' : ''}`}
+                    onClick={() => setToolboxOpen((v) => !v)}
+                    aria-label="Add step"
+                    aria-expanded={toolboxOpen}
+                  >
+                    <Plus size={15} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
+            </div>
+          </div>
+
+          {selectedNode ? (
+            <Settings
+              node={selectedNode}
+              entries={entries}
+              change={handleUpdateStep}
+              remove={handleRemoveStep}
+              onClose={() => {
+                setSelectedId(null);
+                setOverviewOpen(false);
+              }}
+              onBackToOverview={() => {
+                setSelectedId(null);
+                setRightPanel('overview');
+                setOverviewOpen(true);
+              }}
+            />
+          ) : overviewOpen && rightPanel === 'test' ? (
+            <aside
+              className="studio-drawer studio-drawer-right stealth-glass"
+              aria-label="Test run"
+            >
+              <div className="drawer-header">
+                <div className="drawer-title-inline">
+                  <Button
+                    icon={<ArrowLeft size={13} />}
+                    tooltip="Workflow overview"
+                    size="xs"
+                    onClick={() => setRightPanel('overview')}
+                  />
+                  <span className="drawer-kicker">TEST RUN</span>
+                </div>
+                <div className="drawer-header-actions">
+                  <Button
+                    icon={<X size={14} />}
+                    tooltip="Close"
+                    size="xs"
+                    onClick={() => setOverviewOpen(false)}
+                  />
+                </div>
+              </div>
+
+              <div className="drawer-body scroll-area">
+                <div className="stat-box">
+                  <span className="stat-label">Session limit</span>
+                  <span className="stat-val accent-gold">
+                    {user ? (hasApprovedLimit ? approvedUsd : '$0.00') : 'Sign in required'}
+                  </span>
+                </div>
+
+                <CoordinatorField
+                  mode="runner"
+                  value={testCoordinator}
+                  entries={entries}
+                  disabled={testing}
+                  onNotify={onNotify}
+                  onChange={(nextCoord) => {
+                    setTestCoordinator(nextCoord);
+                    setPausedTestThreadId(null);
+                  }}
+                />
+
+                <RunComposer
+                  compact
+                  label="Input"
+                  value={testInput}
+                  onChange={setTestInput}
+                  attachments={testAttachments}
+                  onAttachmentsChange={setTestAttachments}
+                  placeholder={flow.brief || 'Enter test prompt, attach files, or record voice...'}
+                  busy={testing}
+                  submitDisabled={flow.nodes.length === 0}
+                  submitLabel={dryTest ? 'Dry Run' : 'Run'}
+                  busyLabel="Running..."
+                  onSubmit={(overrideAttachments) =>
+                    void executeTestRun(
+                      undefined,
+                      overrideAttachments ? { attachments: overrideAttachments } : undefined,
+                    )
+                  }
+                  onAuthRequired={() => {
+                    if (!user) {
+                      openAuthModal();
+                      return false;
+                    }
+                    return true;
+                  }}
+                  secondaryAction={
+                    !user || !hasApprovedLimit ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={openAuthModal}
+                      >
+                        <span>{!user ? 'Sign in' : 'Approve limit'}</span>
+                      </button>
+                    ) : null
+                  }
+                  beforeSubmitContent={
+                    <>
+                      <label className="switch-row">
+                        <span>Dry run (no external paid actions)</span>
+                        <input
+                          type="checkbox"
+                          checked={dryTest}
+                          disabled={testing}
+                          onChange={(event) => setDryTest(event.target.checked)}
+                        />
+                      </label>
+                      {effectiveMissingConnectors.length > 0 && !credentialsModalOpen ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            if (!user) openAuthModal();
+                            else setCredentialsModalOpen(true);
+                          }}
+                        >
+                          <Link2 size={13} aria-hidden="true" />
+                          <span>
+                            Connect required{' '}
+                            {effectiveMissingConnectors.length === 1 ? 'account' : 'accounts'}
+                          </span>
+                        </button>
+                      ) : null}
+                      {testing ? (
+                        <div className="wf-live-sse-strip" role="status" aria-live="polite">
+                          <span className="wf-fold-dot" aria-hidden="true" />
+                          <span className="wf-live-sse-title">
+                            {testLiveTitle || 'Executing steps...'}
+                          </span>
+                          {testLiveSnippet ? (
+                            <span className="wf-live-sse-snippet" aria-live="off">
+                              {testLiveSnippet}
+                            </span>
+                          ) : null}
+                          {BigInt(testLiveBillWei || '0') > 0n ? (
+                            <span className="wf-live-sse-bill">
+                              {formatMicroUsdc(testLiveBillWei)}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {missingInputs.length > 0 && !inputPromptOpen ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setInputPromptOpen(true)}
+                        >
+                          <span>Provide required input</span>
+                        </button>
+                      ) : null}
+                    </>
+                  }
+                  errorText={testError}
+                />
+
+                {testResult ? (
+                  <div className="output-box">
+                    <div className="output-header">
+                      <span className="field-label">
+                        Output · {formatMicroUsdc(testResult.totalChargedWei)}
+                      </span>
+                      <Button
+                        icon={copiedOutput ? <Check size={12} /> : <Copy size={12} />}
+                        tooltip={copiedOutput ? 'Copied' : 'Copy output'}
+                        size="xs"
+                        onClick={() => {
+                          const selectedStep = testResult.steps.find((s) => s.id === testActiveTab);
+                          void navigator.clipboard.writeText(
+                            selectedStep ? selectedStep.output : testResult.output,
+                          );
+                          setCopiedOutput(true);
+                          window.setTimeout(() => setCopiedOutput(false), 1600);
+                        }}
+                      />
+                    </div>
+                    {testResult.steps.length > 1 ? (
+                      <div className="run-output-tabs" role="tablist" aria-label="Test step outputs">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={testActiveTab === 'final'}
+                          className={`chip-btn ${testActiveTab === 'final' ? 'is-active' : ''}`}
+                          onClick={() => setTestActiveTab('final')}
+                        >
+                          Deliverable
+                        </button>
+                        {testResult.steps.map((step, idx) => (
+                          <button
+                            key={step.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={testActiveTab === step.id}
+                            className={`chip-btn wf-step-tab ${testActiveTab === step.id ? 'is-active' : ''}`}
+                            onClick={() => setTestActiveTab(step.id)}
+                          >
+                            <span>
+                              {idx + 1}. {step.label}
+                            </span>
+                            {BigInt(step.billWei || '0') > 0n ? (
+                              <span className="node-price-tag">
+                                {formatMicroUsdc(step.billWei)}
+                              </span>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <RichOutput
+                      output={
+                        testResult.steps.find((s) => s.id === testActiveTab)?.output ??
+                        testResult.output
+                      }
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </aside>
+          ) : overviewOpen ? (
+            <aside
+              className="studio-drawer studio-drawer-right stealth-glass"
+              aria-label="Workflow overview"
+            >
+              <div className="drawer-header">
+                <span className="drawer-kicker">WORKFLOW</span>
+                <div className="drawer-header-actions">
+                  <Button
+                    icon={<X size={14} />}
+                    tooltip="Hide panel"
+                    size="xs"
+                    onClick={() => setOverviewOpen(false)}
+                  />
+                </div>
+              </div>
+
+              <div className="drawer-body scroll-area">
+                <div className="field">
+                  <span className="field-label">Banner</span>
+                  <BannerMediaFrame
+                    src={flow.banner}
+                    uploading={uploadingBanner}
+                    generating={generatingBanner}
+                    uploadLabel="Upload banner"
+                    changeLabel="Change banner"
+                    removeLabel="Clear banner"
+                    generateLabel="Generate banner"
+                    regenerateLabel="Regenerate banner"
+                    generateDescription="Uses Name, Description & Steps"
+                    onUploadFile={handleBannerUpload}
+                    onGenerate={() => void handleGenerateBanner()}
+                    onRemove={
+                      flow.banner
+                        ? () =>
+                          commitFlow((curr) => ({
+                            ...curr,
+                            banner: null,
+                            modified: new Date().toISOString(),
+                          }))
+                        : undefined
+                    }
+                  />
+                </div>
+
+                <label className="field">
+                  <span className="field-label">Name</span>
+                  <input
+                    type="text"
+                    name="workflow-name"
+                    className="input"
+                    required
+                    value={flow.name}
+                    onChange={(event) =>
+                      setFlow((curr) => ({
+                        ...curr,
+                        name: event.target.value,
+                        modified: new Date().toISOString(),
+                      }))
+                    }
+                    onBlur={() => {
+                      if (!flow.name.trim()) {
+                        const fallbackName = computeDefaultUnknownName();
+                        setFlow((curr) => ({
+                          ...curr,
+                          name: fallbackName,
+                          modified: new Date().toISOString(),
+                        }));
+                      }
+                    }}
+                    placeholder="unknown #1"
+                  />
+                </label>
+
+                <label className="field">
+                  <span className="field-label">Description</span>
+                  <textarea
+                    name="workflow-description"
+                    className="textarea"
+                    rows={3}
+                    value={flow.brief ?? ''}
+                    onChange={(event) =>
+                      setFlow((curr) => ({
+                        ...curr,
+                        brief: event.target.value,
+                        modified: new Date().toISOString(),
+                      }))
+                    }
+                    placeholder="Optional description..."
+                  />
+                </label>
+
+                <TaskPicker
+                  value={flow.tasks ?? []}
+                  onChange={(nextTasks) =>
+                    commitFlow((curr) => ({
+                      ...curr,
+                      tasks: nextTasks,
+                      modified: new Date().toISOString(),
+                    }))
+                  }
+                />
+
+                <CoordinatorField
+                  value={flow.coordinator ?? null}
+                  entries={entries}
+                  onNotify={onNotify}
+                  onChange={(nextCoord) =>
+                    commitFlow((curr) => setCoordinator(curr, nextCoord))
+                  }
+                />
+
+                <div className="field">
+                  <div className="field-head-row">
+                    <span className="field-label">Steps ({flow.nodes.length})</span>
+                    <Button
+                      icon={<Plus size={13} />}
+                      tooltip="Add step (⌘N)"
+                      size="xs"
+                      onClick={() => {
+                        const lastId =
+                          flow.nodes.length > 0
+                            ? flow.nodes[flow.nodes.length - 1]!.id
+                            : null;
+                        openCatalogForInsertion(lastId, lastId ? 'right' : null, 'model');
+                      }}
+                    />
+                  </div>
+
+                  {flow.nodes.length === 0 ? (
+                    <div className="empty-note">No steps added yet</div>
+                  ) : (
+                    <ol className="overview-steps-list" role="list">
+                      {flow.nodes.map((node, idx) => (
+                        <li key={node.id}>
+                          <button
+                            type="button"
+                            className="overview-step-row"
+                            data-kind={node.data.kind}
+                            onClick={() => setSelectedId(node.id)}
+                          >
+                            <span className="overview-step-idx">{idx + 1}</span>
+                            <span className="overview-step-title">{node.data.label}</span>
+                            <span className="node-type" data-kind={node.data.kind}>
+                              {node.data.kind.toUpperCase()}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              </div>
+            </aside>
+          ) : null}
+        </div>
+      )}
+
+      <CredentialsModal
+        open={credentialsModalOpen && effectiveMissingConnectors.length > 0}
+        missing={effectiveMissingConnectors}
+        userAddress={subjectAddress}
+        onClose={() => {
+          setCredentialsModalOpen(false);
+          void refreshStudioConnectors();
+        }}
+        onConnected={(decisions) => {
+          const shouldAutoResume = Boolean(pausedTestThreadId || missingConnectors.length > 0);
+          const resumeId =
+            pausedTestThreadId ?? missingConnectors[0]?.threadId ?? undefined;
+          setCredentialsModalOpen(false);
+          setMissingConnectors([]);
+          void refreshStudioConnectors();
+          if (shouldAutoResume) {
+            void executeTestRun(undefined, {
+              ...(resumeId ? { threadId: resumeId } : {}),
+              ...(decisions?.length ? { connectorDecisions: decisions } : {}),
+            });
+          } else {
+            onNotify('Account connected');
+          }
+        }}
+      />
+
+      <Prompt
+        open={inputPromptOpen && missingInputs.length > 0}
+        missing={missingInputs}
+        initialPrompt={testInput}
+        initialAttachments={testAttachments}
+        busy={testing}
+        onClose={() => setInputPromptOpen(false)}
+        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments }) => {
+          const resumeId =
+            pausedTestThreadId ?? missingInputs[0]?.threadId ?? undefined;
+          setTestInput(nextPrompt);
+          setTestAttachments(nextAttachments);
+          setInputPromptOpen(false);
+          setMissingInputs([]);
+          void executeTestRun(undefined, {
+            prompt: nextPrompt,
+            attachments: nextAttachments,
+            ...(resumeId ? { threadId: resumeId } : {}),
+          });
+        }}
+      />
+    </div>
+  );
 }
