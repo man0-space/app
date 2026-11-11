@@ -148,3 +148,125 @@ function RequestsList({
     </div>
   );
 }
+
+function SettlementsList({
+  receipts,
+  chains,
+  filter,
+  focused,
+}: {
+  receipts: FeedItem[];
+  chains: readonly FacilitatorChain[];
+  filter: SettlementFilter;
+  focused: boolean;
+}) {
+  const visible = useMemo(() => {
+    const filtered = receipts.filter((receipt) => {
+      if (filter === 'all') return true;
+      const status = receipt.settlementStatus as string;
+      if (filter === 'settled') return status === 'settled' || status === 'claimed';
+      return status === filter;
+    });
+    return focused ? filtered : filtered.slice(0, 6);
+  }, [receipts, filter, focused]);
+
+  if (visible.length === 0) {
+    return <div className="cm-block__empty">No settlements match this filter</div>;
+  }
+
+  return (
+    <div
+      className="cm-feed-list"
+      onClick={(e) => {
+        if (focused) e.stopPropagation();
+      }}
+    >
+      {visible.map((receipt) => {
+        const rawExplorerUrl = receipt.transactionHash
+          ? resolveExplorerTxUrl(chains, receipt.network, receipt.transactionHash)
+          : '#';
+        const explorerUrl =
+          rawExplorerUrl !== '#' && receipt.network.startsWith('solana:')
+            ? `${rawExplorerUrl}${rawExplorerUrl.includes('?') ? '&' : '?'}view=receipt`
+            : rawExplorerUrl;
+
+        return (
+          <div key={receipt.id} className="cm-receipt-item">
+            <div className="cm-receipt-item__top">
+              <span className="cm-receipt-item__model">
+                <img
+                  src={networkLogoForChain(receipt.network)}
+                  alt=""
+                  className="cm-network-filter__logo"
+                />
+                {receipt.model}
+              </span>
+              <span className="cm-receipt-item__amount">
+                {formatWeiUsd(receipt.finalAmountAtomic)}
+              </span>
+            </div>
+            <div className="cm-receipt-item__bottom">
+              <span className="cm-receipt-item__meta">
+                <span>{timeAgo(receipt.settledAt)}</span>
+                <span
+                  className="cm-usage-modality"
+                  data-tone={primaryModalityKey(receipt.type)}
+                >
+                  {formatModelTypeLabel(receipt.type)}
+                </span>
+                {receipt.transactionHash && explorerUrl !== '#' && (
+                  <a
+                    href={explorerUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="cm-receipt-tx"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {shortTx(receipt.transactionHash)}
+                    <ExternalLink size={10} />
+                  </a>
+                )}
+              </span>
+              <span
+                className="cm-settlement-badge"
+                data-tone={settlementTone(receipt.settlementStatus)}
+              >
+                {receipt.settlementStatus}
+              </span>
+            </div>
+            {focused && (
+              <div className="cm-receipt-detail">
+                <div className="cm-receipt-detail__row">
+                  <span>Inference</span>
+                  <strong>{formatWeiUsd(receipt.inferenceAmountAtomic)}</strong>
+                </div>
+                <div className="cm-receipt-detail__row">
+                  <span>Platform Fee</span>
+                  <strong>{formatWeiUsd(receipt.platformFeeAtomic)}</strong>
+                </div>
+                {receipt.pricedUnits.length > 0 && (
+                  <div className="cm-receipt-detail__lineitems">
+                    {receipt.pricedUnits.map((item) => (
+                      <div
+                        key={`${item.key}:${item.unit}`}
+                        className="cm-receipt-detail__lineitem"
+                      >
+                        <span className="cm-receipt-detail__lineitem-key">
+                          {item.key} · {item.quantity} {item.unit}
+                          {item.unitPriceUsd > 0 ? ` @ ${formatUsd(item.unitPriceUsd)}` : ''}
+                        </span>
+                        <span className="cm-receipt-detail__lineitem-amount">
+                          {formatWeiUsd(item.amountAtomic)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
