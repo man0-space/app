@@ -270,3 +270,209 @@ function SettlementsList({
     </div>
   );
 }
+
+export function ReceiptFeed({
+  receipts,
+  requests,
+  chains = [],
+  hasMoreSettlements = false,
+  hasMoreRequests = false,
+  isLoadingMore = false,
+  onLoadMore,
+  focused = false,
+  dataBlock = 'feed',
+  onClick,
+}: {
+  receipts: FeedItem[];
+  requests: RequestRow[];
+  chains?: readonly FacilitatorChain[];
+  hasMoreSettlements?: boolean;
+  hasMoreRequests?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: (kind: ActivityTab) => void;
+  focused?: boolean;
+  dataBlock?: string;
+  onClick?: () => void;
+}) {
+  const [tab, setTab] = useState<ActivityTab>('requests');
+  const [requestFilter, setRequestFilter] = useState<RequestFilter>('all');
+  const [settlementFilter, setSettlementFilter] = useState<SettlementFilter>('all');
+
+  const requestCounts = useMemo(() => {
+    const tally = { all: requests.length, succeeded: 0, failed: 0, streamed: 0 };
+    for (const row of requests) {
+      if (row.status === 'succeeded') tally.succeeded += 1;
+      if (row.status === 'failed' || row.status === 'aborted') tally.failed += 1;
+      if (row.streamed) tally.streamed += 1;
+    }
+    return tally;
+  }, [requests]);
+
+  const settlementCounts = useMemo(() => {
+    const tally = { all: receipts.length, settled: 0, submitted: 0, queued: 0, failed: 0 };
+    for (const receipt of receipts) {
+      const status = receipt.settlementStatus as string;
+      if (status === 'settled' || status === 'claimed') tally.settled += 1;
+      else if (status === 'submitted') tally.submitted += 1;
+      else if (status === 'queued') tally.queued += 1;
+      else if (status === 'failed') tally.failed += 1;
+    }
+    return tally;
+  }, [receipts]);
+
+  const hasMore = tab === 'requests' ? hasMoreRequests : hasMoreSettlements;
+  const isEmpty = tab === 'requests' ? requests.length === 0 : receipts.length === 0;
+
+  return (
+    <section
+      className="cm-block"
+      data-block={dataBlock}
+      data-focused={focused ? 'true' : 'false'}
+      onClick={onClick}
+    >
+      <header className="cm-block__header">
+        <div className="cm-block__header-side" onClick={(event) => event.stopPropagation()}>
+          <BlockDropdown
+            value={tab}
+            options={VIEW_OPTIONS}
+            label="Activity view"
+            onChange={setTab}
+            align="start"
+          />
+        </div>
+        <div className="cm-block__header-side" onClick={(event) => event.stopPropagation()}>
+          {tab === 'requests' ? (
+            <BlockDropdown
+              value={requestFilter}
+              options={[
+                { value: 'all', label: 'ALL', count: requestCounts.all, icon: Layers },
+                {
+                  value: 'succeeded',
+                  label: 'SUCCEEDED',
+                  count: requestCounts.succeeded,
+                  icon: Play,
+                },
+                {
+                  value: 'failed',
+                  label: 'FAILED',
+                  count: requestCounts.failed,
+                  icon: XCircle,
+                },
+                {
+                  value: 'streamed',
+                  label: 'STREAMED',
+                  count: requestCounts.streamed,
+                  icon: Zap,
+                },
+              ]}
+              label="Filter requests"
+              onChange={setRequestFilter}
+              align="end"
+            />
+          ) : (
+            <BlockDropdown
+              value={settlementFilter}
+              options={[
+                { value: 'all', label: 'ALL', count: settlementCounts.all, icon: Layers },
+                {
+                  value: 'settled',
+                  label: 'SETTLED',
+                  count: settlementCounts.settled,
+                  icon: CheckCircle2,
+                },
+                {
+                  value: 'submitted',
+                  label: 'SUBMITTED',
+                  count: settlementCounts.submitted,
+                  icon: Clock,
+                },
+                {
+                  value: 'queued',
+                  label: 'QUEUED',
+                  count: settlementCounts.queued,
+                  icon: Clock,
+                },
+                {
+                  value: 'failed',
+                  label: 'FAILED',
+                  count: settlementCounts.failed,
+                  icon: XCircle,
+                },
+              ]}
+              label="Filter settlements"
+              onChange={setSettlementFilter}
+              align="end"
+            />
+          )}
+        </div>
+      </header>
+
+      <div className="cm-block__body">
+        <div className="cm-feed-summary">
+          {tab === 'requests' ? (
+            <>
+              <span className="cm-feed-summary__item">
+                <span className="cm-feed-summary__dot" data-tone="emerald" />
+                {requestCounts.succeeded} SUCCEEDED
+              </span>
+              {requestCounts.streamed > 0 && (
+                <span className="cm-feed-summary__item">
+                  <span className="cm-feed-summary__dot" data-tone="violet" />
+                  {requestCounts.streamed} STREAMED
+                </span>
+              )}
+              {requestCounts.failed > 0 && (
+                <span className="cm-feed-summary__item">
+                  <span className="cm-feed-summary__dot" data-tone="danger" />
+                  {requestCounts.failed} FAILED
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="cm-feed-summary__item">
+                <span className="cm-feed-summary__dot" data-tone="emerald" />
+                {settlementCounts.settled} SETTLED
+              </span>
+              {settlementCounts.queued + settlementCounts.submitted > 0 && (
+                <span className="cm-feed-summary__item">
+                  <span className="cm-feed-summary__dot" data-tone="amber" />
+                  {settlementCounts.queued + settlementCounts.submitted} PENDING
+                </span>
+              )}
+            </>
+          )}
+        </div>
+
+        {isEmpty ? (
+          <div className="cm-block__empty">
+            {tab === 'requests' ? 'No requests in this range' : 'No settlements yet'}
+          </div>
+        ) : tab === 'requests' ? (
+          <RequestsList requests={requests} filter={requestFilter} focused={focused} />
+        ) : (
+          <SettlementsList
+            receipts={receipts}
+            chains={chains}
+            filter={settlementFilter}
+            focused={focused}
+          />
+        )}
+
+        {hasMore && onLoadMore ? (
+          <button
+            type="button"
+            className="cm-feed-more"
+            disabled={isLoadingMore}
+            onClick={(event) => {
+              event.stopPropagation();
+              onLoadMore(tab);
+            }}
+          >
+            {isLoadingMore ? 'Loading…' : `Load more ${tab}`}
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
