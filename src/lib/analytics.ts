@@ -531,3 +531,90 @@ export function zeroFillTimeline(
   }
   return buckets;
 }
+
+export function summarize(response: Response): Summary {
+  const totalUsd = atomicToUsd(response.totals.billing.finalAmountAtomic);
+  const interval: AnalyticsInterval = response.filters.interval ?? 'day';
+  const requests = response.requests.data.map(mapRequestRow);
+  const ttftSamples = requests.filter((row) => row.ttftMs !== null);
+  const latencySamples = requests
+    .map((row) => row.latencyMs)
+    .filter((ms) => Number.isFinite(ms) && ms > 0)
+    .sort((a, b) => a - b);
+  const requestTotals = response.totals.requests;
+  const reportedAvgMs =
+    response.totals.latency.count > 0 ? finiteNonNeg(response.totals.latency.averageMs) : 0;
+  const reportedP95Ms =
+    response.totals.latency.count > 0 ? finiteNonNeg(response.totals.latency.p95Ms) : 0;
+  const fallbackAvgMs =
+    latencySamples.length > 0
+      ? latencySamples.reduce((sum, ms) => sum + ms, 0) / latencySamples.length
+      : 0;
+  const fallbackP95Ms =
+    latencySamples.length > 0 ? percentileSorted(latencySamples, 0.95) : 0;
+
+  return {
+    response,
+    totalUsd,
+    inferenceUsd: atomicToUsd(response.totals.billing.inferenceAmountAtomic),
+    platformFeeUsd: atomicToUsd(response.totals.billing.platformFeeAtomic),
+    requestCount: requestTotals.total,
+    successRate: ratio(requestTotals.succeeded, requestTotals.total),
+    streamedShare: ratio(requestTotals.streamed, requestTotals.total),
+    avgLatencyMs:
+      reportedAvgMs > 0 ? reportedAvgMs : fallbackAvgMs > 0 ? fallbackAvgMs : null,
+    p95LatencyMs:
+      reportedP95Ms > 0 ? reportedP95Ms : fallbackP95Ms > 0 ? fallbackP95Ms : null,
+    avgTtftMs:
+      ttftSamples.length > 0
+        ? ttftSamples.reduce((sum, row) => sum + (row.ttftMs ?? 0), 0) / ttftSamples.length
+        : null,
+    tokensIn: pickMetric(response.totals.usage.metrics, INPUT_TOKEN_KEYS),
+    tokensOut: pickMetric(response.totals.usage.metrics, OUTPUT_TOKEN_KEYS),
+    interval,
+    modelUsage: response.breakdowns.models
+      .map((entry) => {
+        const computedTotalTokens =
+          entry.totals.usage.metrics.total_tokens ||
+          pickMetric(entry.totals.usage.metrics, INPUT_TOKEN_KEYS) +
+            pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS);
+        return {
+          subject: entry.key,
+          modelId: entry.key,
+          family: entry.label ?? entry.key,
+          totalAmountAtomic: atomic(entry.totals.billing.finalAmountAtomic),
+          totalUsd: atomicToUsd(entry.totals.billing.finalAmountAtomic),
+          calls: entry.totals.requests.total,
+          totalTokens: computedTotalTokens,
+          tokensIn: pickMetric(entry.totals.usage.metrics, INPUT_TOKEN_KEYS),
+          tokensOut: pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS),
+          p50Ms: entry.totals.latency.count > 0 ? entry.totals.latency.p50Ms : null,
+          p95Ms: entry.totals.latency.count > 0 ? entry.totals.latency.p95Ms : null,
+          successRate: ratio(entry.totals.requests.succeeded, entry.totals.requests.total),
+          lastUsed: entry.lastAt ? Date.parse(entry.lastAt) : 0,
+          type: entry.types?.join(', ') || 'unknown',
+        };
+      })
+      .sort((left, right) => right.totalUsd - left.totalUsd || right.calls - left.calls),
+    typeBreakdown: response.breakdowns.types
+      .map((entry) => ({
+        key: entry.key,
+        usd: atomicToUsd(entry.totals.billing.finalAmountAtomic),
+        calls: entry.totals.requests.total,
+        tokens:
+          entry.totals.usage.metrics.total_tokens ||
+          pickMetric(entry.totals.usage.metrics, INPUT_TOKEN_KEYS) +
+            pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS),
+        pct:
+          totalUsd > 0
+            ? (atomicToUsd(entry.totals.billing.finalAmountAtomic) / totalUsd) * 100
+            : 0,
+        avgLatencyMs: entry.totals.latency.count > 0 ? entry.totals.latency.averageMs : null,
+        successRate: ratio(entry.totals.requests.succeeded, entry.totals.requests.total),
+      }))
+      .sort((a, b) => b.usd - a.usd || b.calls - a.calls),
+    timeline: zeroFillTimeline(response, interval),
+    activity: response.settlements.data.map(mapFeedItem),
+    requests,
+  };
+}
