@@ -618,3 +618,216 @@ export function summarize(response: Response): Summary {
     requests,
   };
 }
+
+// =============================================================================
+// Formatters & Display Helpers
+// =============================================================================
+
+export function numberLabel(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 2,
+    notation: value >= 100_000 ? 'compact' : 'standard',
+  }).format(value);
+}
+
+export function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 100_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+export function formatTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value < 1000) return String(Math.round(value));
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+export function formatPct(rate: number | null, digits = 1): string {
+  if (rate === null || !Number.isFinite(rate)) return '—';
+  return `${(rate * 100).toFixed(digits)}%`;
+}
+
+function two(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+export function tickTime(timestamp: number, interval: AnalyticsInterval): string {
+  const date = new Date(timestamp);
+  if (interval === 'day') return `${MONTHS[date.getMonth()]} ${date.getDate()}`;
+  return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+export function tooltipTime(
+  timestamp: number,
+  endTimestamp: number,
+  interval: AnalyticsInterval,
+): string {
+  const date = new Date(timestamp);
+  const day = `${MONTHS[date.getMonth()]} ${date.getDate()}`;
+  if (interval === 'day') return day;
+  const end = new Date(endTimestamp);
+  return `${day} ${two(date.getHours())}:${two(date.getMinutes())}–${two(end.getHours())}:${two(end.getMinutes())}`;
+}
+
+export interface RollingAnalyticsInput {
+  rangeMs: number;
+  filters: Omit<InferenceAnalytics.InferenceAnalyticsFilters, 'from' | 'to' | 'networks'>;
+  networks: readonly string[];
+}
+
+export function buildRollingAnalyticsFilters(
+  input: RollingAnalyticsInput,
+  now = Date.now(),
+): InferenceAnalytics.InferenceAnalyticsFilters {
+  const networks = [...new Set(input.networks)].sort();
+  return {
+    ...input.filters,
+    from: new Date(now - input.rangeMs).toISOString(),
+    to: new Date(now).toISOString(),
+    ...(networks.length > 0 ? { networks } : {}),
+  };
+}
+
+// =============================================================================
+// Family Logo, Modality Label & Chain Explorer Helpers
+// =============================================================================
+
+const SERIES_PATTERNS: Array<[RegExp, string]> = [
+  [/(?:^|\/|-)(?:gpt|chatgpt|o1|o3|o4|whisper|tts-1|dall-e)/i, 'openai'],
+  [/(?:^|\/|-)claude/i, 'anthropic'],
+  [/(?:^|\/|-)(?:gemini|gemma|imagen|veo|lyria|chirp)/i, 'google'],
+  [/(?:^|\/|-)(?:qwen|qwq|wan|cosyvoice|happyhorse)/i, 'alibaba'],
+  [/(?:^|\/|-)deepseek/i, 'deepseek'],
+  [/(?:^|\/|-)llama/i, 'meta'],
+  [/(?:^|\/|-)(?:mistral|ministral|codestral|pixtral|devstral|magistral)/i, 'mistral'],
+  [/(?:^|\/|-)flux/i, 'blackforestlabs'],
+  [/(?:^|\/|-)(?:glm|cogview|cogvideo)/i, 'zai'],
+  [/(?:^|\/|-)grok/i, 'xai'],
+  [/(?:^|\/|-)kimi/i, 'moonshot'],
+  [/(?:^|\/|-)minimax/i, 'minimax'],
+  [/(?:^|\/|-)command/i, 'cohere'],
+  [/(?:^|\/|-)nemotron/i, 'nvidia'],
+];
+
+export function getFamilyLogoUrl(familyOrModel: string | undefined | null): string | null {
+  if (!familyOrModel) return null;
+  const normalized = familyOrModel
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  if (FAMILY_LOGOS[normalized]) {
+    return `/families/${FAMILY_LOGOS[normalized]}`;
+  }
+  const prefix = familyOrModel.split(/[/:]/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  if (prefix && FAMILY_LOGOS[prefix]) {
+    return `/families/${FAMILY_LOGOS[prefix]}`;
+  }
+  for (const [pattern, key] of SERIES_PATTERNS) {
+    if (pattern.test(familyOrModel) && FAMILY_LOGOS[key]) {
+      return `/families/${FAMILY_LOGOS[key]}`;
+    }
+  }
+  return null;
+}
+
+const TYPE_LABEL_MAP: Record<string, string> = {
+  text: 'Text',
+  llm: 'Text',
+  'text-generation': 'Text',
+  conversational: 'Chat',
+  image: 'Image',
+  'text-to-image': 'Image',
+  'image-to-image': 'Image Edit',
+  audio: 'Audio',
+  'text-to-speech': 'TTS',
+  'speech-to-text': 'STT',
+  'text-to-audio': 'Music',
+  'music-generation': 'Music',
+  video: 'Video',
+  'text-to-video': 'Video',
+  'image-to-video': 'Video',
+  embedding: 'Embed',
+  embeddings: 'Embed',
+  'feature-extraction': 'Embed',
+  rerank: 'Rerank',
+  'deep-research': 'Research',
+  unknown: 'Other',
+};
+
+export function primaryModalityKey(rawType: string | undefined | null): string {
+  const first = (rawType ?? '')
+    .split(',')[0]
+    ?.trim()
+    .toLowerCase();
+  if (!first) return 'unknown';
+  if (first === 'llm') return 'text';
+  if (first === 'embeddings') return 'embedding';
+  return first;
+}
+
+export function formatModelTypeLabel(rawType: string | undefined | null): string {
+  const key = primaryModalityKey(rawType);
+  if (TYPE_LABEL_MAP[key]) return TYPE_LABEL_MAP[key];
+  return key
+    .split('-')
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ''))
+    .join(' ');
+}
+
+export function networkLogoForChain(network: string | undefined | null): string {
+  const raw = (network ?? '').toLowerCase();
+  if (raw.startsWith('solana:')) return '/networks/solana-2.png';
+  if (raw.startsWith('near:')) return '/networks/NEAR-2.png';
+  return '/networks/ethereum.png';
+}
+
+export function resolveExplorerTxUrl(
+  chains: readonly FacilitatorChain[],
+  network: string,
+  txHash: string,
+): string {
+  if (!txHash) return '#';
+  const matched = chains.find((c) => c.network === network);
+  if (matched?.explorer) {
+    const base = matched.explorer.replace(/\/+$/, '');
+    const query = matched.explorerQuery
+      ? matched.explorerQuery.startsWith('?')
+        ? matched.explorerQuery
+        : `?${matched.explorerQuery}`
+      : '';
+    if (matched.namespace === 'near' || network.startsWith('near:')) {
+      return `${base}/txns/${encodeURIComponent(txHash)}${query}`;
+    }
+    return `${base}/tx/${encodeURIComponent(txHash)}${query}`;
+  }
+  const lower = network.toLowerCase();
+  if (lower.startsWith('solana:')) {
+    const devnet = lower.includes('devnet') || lower.includes('etwtrabzayq6imfeykouru166vu2xqa1');
+    return `https://solscan.io/tx/${encodeURIComponent(txHash)}${devnet ? '?cluster=devnet' : ''}`;
+  }
+  if (lower.startsWith('near:')) {
+    return explorerTxUrl(txHash, lower.includes('testnet') ? 'v1.testnet' : 'v1.near');
+  }
+  if (lower === 'eip155:8453') return `https://basescan.org/tx/${encodeURIComponent(txHash)}`;
+  if (lower === 'eip155:42161') return `https://arbiscan.io/tx/${encodeURIComponent(txHash)}`;
+  if (lower === 'eip155:43114') return `https://snowtrace.io/tx/${encodeURIComponent(txHash)}`;
+  return externalWalletExplorerUrl('evm', txHash).replace('/address/', '/tx/');
+}
