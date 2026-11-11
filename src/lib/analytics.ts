@@ -424,3 +424,110 @@ export function mergeAnalyticsResponses(
     updatedAt: base.updatedAt,
   };
 }
+
+export function mapFeedItem(settlement: InferenceAnalytics.InferenceSettlement): FeedItem {
+  const paymentIntentId = (
+    settlement as InferenceAnalytics.InferenceSettlement & { paymentIntentId?: string }
+  ).paymentIntentId;
+  return {
+    id: settlement.id,
+    requestId: settlement.requestId,
+    network: settlement.network as NetworkId,
+    model: settlement.model,
+    type: settlement.types.join(', '),
+    pricedUnits: settlement.pricedUnits,
+    inferenceAmountAtomic: settlement.billing.inferenceAmountAtomic,
+    platformFeeAtomic: settlement.billing.platformFeeAtomic,
+    finalAmountAtomic: settlement.billing.finalAmountAtomic,
+    settlementStatus: settlement.status,
+    transactionHash:
+      settlement.transactionHash ||
+      settlement.settleTransactionHash ||
+      settlement.claimTransactionHash,
+    paymentIntentId,
+    settledAt: Date.parse(settlement.settledAt || settlement.createdAt),
+  };
+}
+
+export function mapRequestRow(record: InferenceAnalytics.InferenceRequestRecord): RequestRow {
+  return {
+    id: record.id,
+    model: record.model,
+    family: record.family,
+    type: record.types.join(', '),
+    operation: record.operation,
+    status: record.status,
+    streamed: record.streamed,
+    latencyMs: record.latencyMs,
+    ttftMs: typeof record.timeToFirstTokenMs === 'number' ? record.timeToFirstTokenMs : null,
+    startedAt: Date.parse(record.startedAt),
+    tokensIn: pickMetric(record.usage.metrics, INPUT_TOKEN_KEYS),
+    tokensOut: pickMetric(record.usage.metrics, OUTPUT_TOKEN_KEYS),
+    costUsd: atomicToUsd(record.billing.finalAmountAtomic),
+    error: record.error ? `${record.error.code}: ${record.error.message}` : undefined,
+  };
+}
+
+const INTERVAL_MS: Record<AnalyticsInterval, number> = {
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+};
+
+const MAX_BUCKETS = 2_000;
+
+function floorToInterval(timestampMs: number, interval: AnalyticsInterval): number {
+  const date = new Date(timestampMs);
+  if (interval === 'day') {
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+  if (interval === 'hour') {
+    return Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      date.getUTCHours(),
+    );
+  }
+  return Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+  );
+}
+
+export function zeroFillTimeline(
+  response: Response,
+  interval: AnalyticsInterval,
+): TimelineBucket[] {
+  const step = INTERVAL_MS[interval];
+  const byStart = new Map<number, Totals>();
+  for (const bucket of response.timeline) {
+    byStart.set(Date.parse(bucket.start), bucket.totals);
+  }
+
+  const from = response.filters.from ? Date.parse(response.filters.from) : Number.NaN;
+  const to = response.filters.to ? Date.parse(response.filters.to) : Number.NaN;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+    return response.timeline.map((bucket) => ({
+      timestamp: Date.parse(bucket.start),
+      endTimestamp: Date.parse(bucket.end),
+      totals: bucket.totals,
+    }));
+  }
+
+  const buckets: TimelineBucket[] = [];
+  let cursor = floorToInterval(from, interval);
+  const last = floorToInterval(to, interval);
+  while (cursor <= last && buckets.length < MAX_BUCKETS) {
+    buckets.push({
+      timestamp: cursor,
+      endTimestamp: cursor + step,
+      totals: byStart.get(cursor) ?? emptyTotals(),
+    });
+    cursor += step;
+  }
+  return buckets;
+}
