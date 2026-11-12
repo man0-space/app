@@ -238,3 +238,225 @@ export const FEED_VIEW_OPTIONS: DropdownOption<FeedView>[] = [
   { value: 'runs', label: 'RUNS', icon: Radio, tooltip: 'Chronological workflow execution activity feed' },
   { value: 'settlements', label: 'SETTLEMENTS', icon: Layers, tooltip: 'Verified on-chain creator royalty settlements' },
 ];
+
+// ============================================================================
+// Pure Helpers
+// ============================================================================
+
+export function atomicToUsd(atomic: string | number | null | undefined): number {
+  const n = typeof atomic === 'number' ? atomic : Number(atomic ?? '0');
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n / 1_000_000;
+}
+
+export function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '$0.00';
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  if (value >= 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(6)}`;
+}
+
+export function formatMs(ms: number): string {
+  const safe = Math.max(0, Math.round(Number(ms) || 0));
+  if (safe === 0) return '0ms';
+  if (safe < 1000) return `${safe}ms`;
+  if (safe < 60_000) return `${(safe / 1000).toFixed(1)}s`;
+  if (safe < 3_600_000) {
+    const mins = Math.floor(safe / 60_000);
+    const secs = Math.floor((safe % 60_000) / 1000);
+    return `${mins}m ${String(secs).padStart(2, '0')}s`;
+  }
+  const hrs = Math.floor(safe / 3_600_000);
+  const mins = Math.floor((safe % 3_600_000) / 60_000);
+  return `${hrs}h ${String(mins).padStart(2, '0')}m`;
+}
+
+export function shortTx(txHash?: string | null): string {
+  if (!txHash) return '';
+  return shortHash(txHash, 6, 4);
+}
+
+export function timeAgo(ts?: number | string | null): string {
+  if (!ts) return 'recent';
+  const parsed = typeof ts === 'number' ? ts : Date.parse(ts);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'recent';
+  const diffSec = Math.max(1, Math.floor((Date.now() - parsed) / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+export function successTone(pct: number): 'emerald' | 'amber' | 'danger' {
+  if (pct >= 95) return 'emerald';
+  if (pct >= 75) return 'amber';
+  return 'danger';
+}
+
+export function classifyNetwork(network?: string | null): {
+  family: 'near' | 'evm' | 'svm';
+  label: string;
+  logoUrl: string;
+} {
+  const raw = (network ?? '').toLowerCase();
+  if (raw.startsWith('solana')) {
+    return { family: 'svm', label: 'Solana', logoUrl: '/networks/solana-2.png' };
+  }
+  if (raw.startsWith('eip155:')) {
+    return { family: 'evm', label: 'EVM', logoUrl: '/networks/ethereum.png' };
+  }
+  return {
+    family: 'near',
+    label: raw.includes('testnet') ? 'NEAR Testnet' : 'NEAR',
+    logoUrl: '/networks/NEAR-2.png',
+  };
+}
+
+export function resolveEventExplorerUrl(network: string, txHash: string | null): string | null {
+  if (!txHash) return null;
+  const raw = (network ?? '').toLowerCase();
+  if (raw.startsWith('solana')) {
+    const devnet = raw.includes('etwtrabzayq6imfeykouru166vu2xqa1') || raw.includes('devnet');
+    return `https://solscan.io/tx/${encodeURIComponent(txHash)}${devnet ? '?cluster=devnet' : ''}`;
+  }
+  if (raw.startsWith('eip155:')) {
+    if (raw === 'eip155:8453') return `https://basescan.org/tx/${encodeURIComponent(txHash)}`;
+    if (raw === 'eip155:84532') return `https://sepolia.basescan.org/tx/${encodeURIComponent(txHash)}`;
+    if (raw === 'eip155:42161') return `https://arbiscan.io/tx/${encodeURIComponent(txHash)}`;
+    if (raw === 'eip155:43114') return `https://snowtrace.io/tx/${encodeURIComponent(txHash)}`;
+    return externalWalletExplorerUrl('evm', txHash).replace('/address/', '/tx/');
+  }
+  return explorerTxUrl(txHash, raw.includes('testnet') ? 'v1.testnet' : 'v1.near');
+}
+
+export function normalizeTaskList(rawTasks?: readonly string[] | null): string[] {
+  const raw = (Array.isArray(rawTasks) ? rawTasks : [])
+    .flatMap((t) => (typeof t === 'string' ? t.split(',') : []))
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    const k = item.toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(item);
+    }
+  }
+  return out.length > 0 ? out : ['Automation'];
+}
+
+export function renderTooltipHtml(
+  title: string,
+  rows: Array<{ label: string; value: string; palette?: PaletteIndex | 'muted' | 'danger'; strong?: boolean }>,
+): string {
+  const rowsHtml = rows
+    .map((r) => {
+      const dot =
+        r.palette !== undefined
+          ? `<span class="cm-chart-tooltip__dot" data-palette="${r.palette}"></span>`
+          : '';
+      return `<div class="cm-chart-tooltip__row" ${r.strong ? 'data-strong="true"' : ''}>
+        <span class="cm-chart-tooltip__label">${dot}${r.label}</span>
+        <span class="cm-chart-tooltip__value">${r.value}</span>
+      </div>`;
+    })
+    .join('');
+  return `<div class="cm-chart-tooltip">
+    <div class="cm-chart-tooltip__time">${title}</div>
+    ${rowsHtml}
+  </div>`;
+}
+
+export function enrichEarnEvent(
+  ev: CreatorEarningEvent,
+  workflowById: Map<string, NormalizedWorkflowRow>,
+): EnrichedEarnEvent {
+  const wf = workflowById.get(ev.workflowId);
+  const allTasks = wf?.allTasks?.length ? wf.allTasks : normalizeTaskList(ev.tasks);
+  const net = classifyNetwork(ev.network);
+  const royaltiesUsd = atomicToUsd(ev.earnedAtomic);
+  const composeBillUsd = atomicToUsd(ev.composeBillAtomic);
+  const totalChargedUsd = atomicToUsd(ev.totalChargedAtomic);
+  const ts = Date.parse(ev.timestamp);
+  return {
+    id: ev.id,
+    workflowId: ev.workflowId,
+    workflowTitle: wf?.title || ev.workflowName || 'Untitled Workflow',
+    primaryTask: allTasks[0] ?? 'Automation',
+    allTasks,
+    taskLabel: allTasks.join(', '),
+    runnerAddress: ev.runnerAddress || '',
+    status: ev.status || 'completed',
+    network: ev.network || 'near:mainnet',
+    networkFamily: net.family,
+    networkLabel: net.label,
+    logoUrl: net.logoUrl,
+    kind: royaltiesUsd > 0 ? 'paid' : 'free',
+    royaltiesUsd,
+    composeBillUsd,
+    totalChargedUsd,
+    durationMs: Math.max(0, Number(ev.durationMs) || 0),
+    stepsCount: Math.max(0, Number(ev.stepsCount) || wf?.stepsCount || 0),
+    txHash: ev.txHash,
+    explorerUrl: resolveEventExplorerUrl(ev.network || 'near:mainnet', ev.txHash),
+    proofCid: ev.proofCid,
+    timestamp: Number.isFinite(ts) ? ts : Date.now(),
+  };
+}
+
+export function mergeWorkflowSummary(
+  summary: CreatorWorkflowEarningSummary | undefined,
+  listing: Listing | undefined,
+): Omit<NormalizedWorkflowRow, 'networkFamily' | 'networkLabel' | 'logoUrl'> | null {
+  const workflowId = summary?.workflowId ?? listing?.id;
+  if (!workflowId) return null;
+  const allTasks = normalizeTaskList(
+    summary?.tasks?.length ? summary.tasks : listing?.terms?.tasks ?? listing?.tasks,
+  );
+  const runs = summary?.runs ?? 0;
+  const succeededRuns = summary?.succeededRuns ?? 0;
+  const failedRuns = summary?.failedRuns ?? 0;
+  const profitUsd = atomicToUsd(summary?.earnedAtomic);
+  const paidRuns = profitUsd > 0 ? summary?.paidRuns ?? 0 : 0;
+  const grossUsd = atomicToUsd(summary?.totalChargedAtomic);
+  const composeCostUsd = Math.max(0, Number((grossUsd - profitUsd).toFixed(6)));
+  const avgDurationMs = summary?.avgDurationMs ?? 0;
+  const totalDurationMs = summary?.totalDurationMs ?? 0;
+  const successPct = runs > 0 ? Number(((succeededRuns / runs) * 100).toFixed(1)) : 100;
+  const lastRaw = summary?.lastRunAt ?? summary?.modified ?? listing?.published ?? listing?.modified;
+  const parsedLast = lastRaw ? Date.parse(lastRaw) : 0;
+
+  return {
+    listing: listing ?? null,
+    workflowId,
+    title: summary?.name || listing?.name || 'Untitled Workflow',
+    banner: summary?.banner ?? listing?.banner ?? null,
+    primaryTask: allTasks[0] ?? 'Automation',
+    allTasks,
+    taskLabel: allTasks.join(', '),
+    published: Boolean(summary?.published ?? listing?.published),
+    creatorFeePct: summary?.creatorFee ?? listing?.terms?.creatorFee ?? 0,
+    stepsCount: summary?.stepsCount ?? listing?.nodes?.length ?? 0,
+    profitUsd,
+    grossUsd,
+    composeCostUsd,
+    runs,
+    paidRuns,
+    succeededRuns,
+    failedRuns,
+    avgDurationMs,
+    totalDurationMs,
+    successPct,
+    lastRunAt: Number.isFinite(parsedLast) ? parsedLast : 0,
+  };
+}
+
+export const getWorkflowRowId = <T extends { workflowId: string }>(params: { data: T }) =>
+  params.data.workflowId;
+export const getTaskRowId = <T extends { task: string }>(params: { data: T }) =>
+  params.data.task;
+export const getFeedRowId = <T extends { id: string }>(params: { data: T }) => params.data.id;
