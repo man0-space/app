@@ -146,3 +146,196 @@
   border-color: var(--accent-connector);
 }
 
+/* ==========================================================================
+   FORM FIELDS, INPUTS, SWITCHES & CHIPS
+   ========================================================================== */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+}
+
+.field-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.field-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+  width: 100%;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 0 var(--space-sm);
+  font-size: var(--font-xs);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input {
+  height: var(--ctrl-h-md);
+}
+
+.input.is-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  min-height: clamp(4.5rem, 11dvh, 7.5rem);
+  padding: var(--space-xs) var(--space-sm);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.textarea.textarea-compact {
+  min-height: 3.4rem;
+  max-height: 5.5rem;
+  resize: none;
+}
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.input:focus,
+.textarea:focus {
+  border-color: var(--accent-model);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.switch-row,
+.check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+
+.check-row {
+  justify-content: flex-start;
+}
+
+.switch-row input[type="checkbox"],
+.check-row input[type="checkbox"] {
+  accent-color: var(--accent-model);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-btn {
+  height: var(--ctrl-h-xs);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 600;
+  transition: all 0.14s ease;
+}
+
+.chip-btn:hover,
+.chip-btn.is-active {
+  color: var(--accent-model);
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+/* ==========================================================================
+   SEARCH INPUT
+   ========================================================================== */
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: clamp(9.5rem, 18vw, 15rem);
+  min-width: 0;
+  height: var(--ctrl-h-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-xs);
+  gap: 6px;
+  transition: border-color 0.15s ease, width 0.18s ease;
+}
+
+.search:focus-within {
+  border-color: var(--accent-model);
+}
+
+.search-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.search input {
+  flex: 1 1 0;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  font-size: var(--font-xs);
+  color: var(--text-primary);
+}
+
+.search input::placeholder {
+  color: var(--text-muted);
+}
+
+.search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.search-clear:hover {
+  color: var(--text-primary);
+}
+
