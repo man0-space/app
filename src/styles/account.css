@@ -764,3 +764,343 @@ progress.onchain-progress-track::-moz-progress-bar {
   }
 }
 
+/* ==========================================================================
+   SHARED CREATOR PROFILE CARD (mypage, /:creator, account modal, editor preview)
+   ========================================================================== */
+.creator-card {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.creator-card.is-compact {
+  border-radius: var(--radius-sm);
+}
+
+.creator-card--editor-preview {
+  border-style: dashed;
+  border-color: rgba(56, 189, 248, 0.42);
+}
+
+.creator-card-banner {
+  position: relative;
+  width: 100%;
+  height: clamp(3.2rem, 7.5dvh, 4.8rem);
+  background:
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.22), transparent 55%),
+    radial-gradient(circle at 80% 60%, rgba(168, 85, 247, 0.18), transparent 60%),
+    linear-gradient(180deg, rgba(14, 19, 28, 0.9), rgba(2, 3, 5, 0.95));
+  border-bottom: 1px solid var(--border-hairline);
+  overflow: hidden;
+}
+
+.creator-card.is-compact .creator-card-banner {
+  height: clamp(2.4rem, 5.2dvh, 3.4rem);
+}
+
+.creator-card-body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+}
+
+.creator-card-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  margin-top: clamp(-1.5rem, -2.5dvh, -1.1rem);
+  z-index: 2;
+}
+
+.creator-card-avatar {
+  width: clamp(2.8rem, 5.2vw, 3.5rem);
+  height: clamp(2.8rem, 5.2vw, 3.5rem);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 2px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.75);
+  color: var(--accent-model);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.creator-card-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.creator-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.creator-card-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.creator-card-name {
+  font-size: var(--font-base);
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creator-card-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
+.creator-wallet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.creator-wallet-pill:hover {
+  border-color: var(--accent-model);
+  color: var(--text-primary);
+}
+
+.creator-wallets-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.creator-wallet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 1.45rem;
+  padding: 2px 6px 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.creator-wallet-chip:hover {
+  border-color: var(--border-bright);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.creator-wallet-net-logo {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+}
+
+.creator-wallet-net-logo.is-near {
+  object-fit: cover;
+}
+
+.creator-wallet-net {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-agent);
+}
+
+.creator-wallet-net.is-evm {
+  color: var(--accent-model);
+}
+
+.creator-wallet-net.is-svm {
+  color: var(--accent-gold);
+}
+
+.creator-wallet-mobile-near {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 1.4rem;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-secondary);
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.creator-wallet-mobile-near:hover {
+  border-color: var(--accent-agent);
+  color: var(--text-primary);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.seg-btn-glyph {
+  display: none;
+  flex-shrink: 0;
+}
+
+.creator-card-bottom-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+  padding-top: 2px;
+  min-width: 0;
+}
+
+.creator-wallet-addr {
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.creator-wallet-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.creator-wallet-icon-btn:hover {
+  color: var(--accent-model);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.creator-card-bio {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.creator-card-bio-empty {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  text-align: left;
+  align-self: flex-start;
+}
+
+.creator-card-bio-empty:hover {
+  color: var(--accent-model);
+}
+
+.creator-socials {
+  padding-top: 0;
+}
+
+/* ==========================================================================
+   COMPACT CREATOR SLOT (cards, detail modal, workflow runner)
+   ========================================================================== */
+.creator-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.creator-slot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+
+.creator-slot-btn.is-clickable {
+  cursor: pointer;
+}
+
+.creator-slot-btn.is-clickable:hover .creator-slot-name {
+  color: var(--accent-model);
+}
+
+.creator-slot-avatar,
+.creator-slot-avatar-placeholder {
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--border-bright);
+}
+
+.creator-slot-avatar-placeholder {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent-model);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.creator-slot-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  transition: color 0.14s ease;
+}
+
+.creator-slot-ext {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: color 0.14s ease;
+}
+
+.creator-slot-ext:hover {
+  color: var(--accent-model);
+}
+
+.creator-slot-empty {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
