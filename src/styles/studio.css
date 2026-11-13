@@ -671,3 +671,146 @@
   padding: var(--space-md);
 }
 
+/* Inspector Output Box */
+.output-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(16, 185, 129, 0.32);
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.output-pre {
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: clamp(8rem, 24dvh, 15rem);
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.empty-note {
+  padding: var(--space-md);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.empty-box {
+  margin: auto;
+  padding: var(--space-lg);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+/* ==========================================================================
+   WORKFLOW METADATA OVERVIEW & INLINE TEST RUN SIDE-PANEL
+   ========================================================================== */
+.field-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.overview-steps-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.overview-step-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 7px 9px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.02);
+  text-align: left;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.overview-step-row:hover {
+  border-color: var(--border-bright);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.overview-step-idx {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.overview-step-title {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vibe-footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.vibe-live-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.vibe-live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  color: var(--accent-model);
+}
+
+.vibe-live-preview {
+  font-size: var(--font-2xs);
+  color: var(--text-secondary);
+  line-height: 1.45;
+  max-height: 5.5rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
