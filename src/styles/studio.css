@@ -1,0 +1,323 @@
+/* STUDIO PAGE: VIBE PROMPT BUILDER, CANVAS STAGE, CATALOG & INSPECTOR DRAWERS */
+
+.studio-container {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.vibe-wrapper {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   FLOATING IN-CANVAS / IN-STAGE STUDIO HUD (VIBE | CANVAS + CONTROLLERS)
+   ========================================================================== */
+.studio-hud {
+  position: absolute;
+  top: var(--space-sm);
+  left: var(--space-sm);
+  right: var(--space-sm);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  pointer-events: none;
+  flex-wrap: wrap;
+}
+
+.studio-hud-left,
+.studio-hud-right {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+}
+
+/* ==========================================================================
+   VIBE PROMPT BUILDER MODE
+   ========================================================================== */
+.vibe-stage {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  overflow-y: auto;
+}
+
+.vibe-card {
+  width: min(100%, 42rem);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.vibe-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.vibe-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent-model);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vibe-meta {
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  color: var(--text-secondary);
+}
+
+.vibe-textarea {
+  width: 100%;
+  min-height: clamp(6.5rem, 16dvh, 10rem);
+  background: var(--bg-input);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  line-height: 1.55;
+  resize: vertical;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.vibe-textarea:focus {
+  border-color: var(--accent-model);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.vibe-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.vibe-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vibe-starter-chip {
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text-secondary);
+  font-size: var(--font-2xs);
+  line-height: 1.35;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.vibe-starter-chip:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--text-primary);
+}
+
+.vibe-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+
+/* ==========================================================================
+   CANVAS STAGE & SIDE DRAWERS (Catalog, Inspector, Run)
+   ========================================================================== */
+.canvas-stage {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+.canvas-plane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.canvas-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -56%);
+  z-index: 15;
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.empty-plus-btn {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.48);
+  color: var(--accent-model);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.16s ease;
+}
+
+.empty-plus-btn:hover {
+  background: var(--accent-model);
+  color: #020305;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.45);
+}
+
+.canvas-empty-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-xs);
+}
+
+/* Side Drawers (Left Catalog, Right Inspector / Run Drawer) */
+.studio-drawer {
+  width: clamp(16.5rem, 23vw, 21.5rem);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  z-index: 25;
+  flex-shrink: 0;
+}
+
+.studio-drawer-left {
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+}
+
+.studio-drawer-right {
+  border-top: none;
+  border-bottom: none;
+  border-right: none;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+  flex-shrink: 0;
+}
+
+.drawer-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drawer-title-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.drawer-sublabel {
+  font-size: var(--font-2xs);
+  color: var(--accent-model);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-kicker {
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.drawer-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.drawer-controls {
+  padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.drawer-controls .search {
+  width: 100%;
+}
+
+.drawer-controls .segmented {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.drawer-controls .seg-btn {
+  flex: 1 1 auto;
+  padding: 0 6px;
+  font-size: var(--font-2xs);
+}
+
+.drawer-body {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
