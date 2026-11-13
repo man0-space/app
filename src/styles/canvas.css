@@ -476,3 +476,218 @@
   transform: translateX(-50%) rotate(45deg) scale(1.25) !important;
 }
 
+/* ==========================================================================
+   PULSING SYNAPSE WIRES (.synapse-bg & .synapse-active from concepts/two.html)
+   ========================================================================== */
+.synapse-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 2;
+}
+
+.synapse-active {
+  fill: none;
+  stroke: var(--accent-model);
+  stroke-width: 2;
+  stroke-dasharray: 8 10;
+  animation: flowPulse 1.35s linear infinite;
+}
+
+.synapse-active[data-kind="model"] {
+  stroke: var(--accent-model);
+}
+
+.synapse-active[data-kind="connector"] {
+  stroke: var(--accent-connector);
+}
+
+.synapse-active[data-kind="agent"] {
+  stroke: var(--accent-agent);
+}
+
+.synapse-active.is-selected {
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 6px var(--accent-model));
+}
+
+.synapse-active.is-idle {
+  opacity: 0.38;
+  animation-duration: 2.8s;
+}
+
+.synapse-active.is-flowing {
+  stroke-width: 2.8;
+  opacity: 1;
+  animation-duration: 0.65s;
+  filter: drop-shadow(0 0 8px var(--accent-agent));
+}
+
+.synapse-active.is-done {
+  stroke: var(--accent-agent);
+  stroke-dasharray: none;
+  animation: none;
+  opacity: 0.88;
+}
+
+@keyframes flowPulse {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+.edge-delete {
+  position: absolute;
+  left: var(--edge-x, 0px);
+  top: var(--edge-y, 0px);
+  transform: translate(-50%, -50%);
+  pointer-events: all;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(9, 12, 18, 0.94);
+  border: 1px solid rgba(255, 46, 99, 0.55);
+  color: var(--accent-connector);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
+  transition: transform 0.14s ease, background 0.14s ease;
+}
+
+.edge-delete:hover {
+  transform: translate(-50%, -50%) scale(1.15);
+  background: rgba(255, 46, 99, 0.2);
+}
+
+/* ==========================================================================
+   FLOATING BOTTOM CANVAS DOCK & + TOOLBOX POPOVER (concepts/two.html)
+   ========================================================================== */
+.canvas-dock {
+  position: absolute;
+  bottom: clamp(12px, 2.2dvh, 22px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.dock-bar {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+}
+
+.dock-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dock-telemetry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-left: 1px solid var(--border-hairline);
+  border-right: 1px solid var(--border-hairline);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.plus-trigger {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: var(--accent-model);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.16s ease;
+}
+
+.plus-trigger:hover,
+.plus-trigger.active {
+  background: var(--accent-model);
+  color: #020305;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.45);
+}
+
+.plus-trigger.active svg {
+  transform: rotate(45deg);
+}
+
+.toolbox-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(8px) scale(0.96);
+  opacity: 0;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  white-space: nowrap;
+}
+
+.toolbox-popover.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 600;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.tool-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-bright);
+}
+
+.dot-model,
+.dot-connector,
+.dot-agent {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-model {
+  background: var(--accent-model);
+  box-shadow: 0 0 8px var(--accent-model);
+}
+
+.dot-connector {
+  background: var(--accent-connector);
+  box-shadow: 0 0 8px var(--accent-connector);
+}
+
+.dot-agent {
+  background: var(--accent-agent);
+  box-shadow: 0 0 8px var(--accent-agent);
+}
