@@ -334,3 +334,145 @@
   outline-offset: 2px;
 }
 
+/* ==========================================================================
+   4-WAY DIRECTIONAL + STEP TERMINATION BUTTONS (UP, DOWN, LEFT, RIGHT)
+   ========================================================================== */
+.node-add-btn {
+  position: absolute;
+  z-index: 6;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(9, 12, 18, 0.94);
+  border: 1px solid var(--border-bright);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.72;
+  transition:
+    opacity 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.wf-node:hover .node-add-btn,
+.wf-node.is-selected .node-add-btn,
+.node-add-btn:focus-visible {
+  opacity: 1;
+}
+
+.node-add-btn:hover {
+  color: #020305;
+  background: var(--node-accent);
+  border-color: var(--node-accent);
+  box-shadow: 0 0 12px var(--node-accent);
+}
+
+.node-add-btn.pos-up {
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.node-add-btn.pos-down {
+  bottom: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.node-add-btn.pos-left {
+  left: -28px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.node-add-btn.pos-right {
+  right: -28px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* ==========================================================================
+   45-DEGREE DIAMOND PORTS (.port.in / .port.out — 4-WAY ADAPTIVE)
+   ========================================================================== */
+.port.in,
+.port.out {
+  width: 9px !important;
+  height: 9px !important;
+  background: #0b0f17 !important;
+  border: 1.5px solid #64748b !important;
+  border-radius: 2px !important;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.port.side-left {
+  left: -5px !important;
+  right: auto !important;
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translateY(-50%) rotate(45deg) !important;
+}
+
+.port.side-right {
+  right: -5px !important;
+  left: auto !important;
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translateY(-50%) rotate(45deg) !important;
+}
+
+.port.side-top {
+  top: -5px !important;
+  bottom: auto !important;
+  left: 50% !important;
+  right: auto !important;
+  transform: translateX(-50%) rotate(45deg) !important;
+}
+
+.port.side-bottom {
+  bottom: -5px !important;
+  top: auto !important;
+  left: 50% !important;
+  right: auto !important;
+  transform: translateX(-50%) rotate(45deg) !important;
+}
+
+.port.is-aux-idle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wf-node:not(.is-readonly):hover .port.in.side-left.is-aux-idle,
+.wf-node:not(.is-readonly):hover .port.out.side-right.is-aux-idle {
+  opacity: 0.65;
+  pointer-events: auto;
+}
+
+.port.is-active-port {
+  opacity: 1;
+}
+
+.port.side-left:hover,
+.port.side-right:hover {
+  background: var(--text-primary) !important;
+  border-color: var(--node-accent) !important;
+  box-shadow: 0 0 10px var(--node-accent);
+  transform: translateY(-50%) rotate(45deg) scale(1.25) !important;
+}
+
+.port.side-top:hover,
+.port.side-bottom:hover {
+  background: var(--text-primary) !important;
+  border-color: var(--node-accent) !important;
+  box-shadow: 0 0 10px var(--node-accent);
+  transform: translateX(-50%) rotate(45deg) scale(1.25) !important;
+}
+
