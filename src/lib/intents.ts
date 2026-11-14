@@ -1188,7 +1188,10 @@ async function sendSvmOriginTransfer(input: {
   return { txHash: sent.txHash };
 }
 
-export async function executeIntentLeg(leg: IntentLeg): Promise<{
+export async function executeIntentLeg(
+  leg: IntentLeg,
+  links?: WalletLink[],
+): Promise<{
   depositAddress: string;
   depositMemo?: string | null;
   txHash?: string;
@@ -1200,16 +1203,69 @@ export async function executeIntentLeg(leg: IntentLeg): Promise<{
   }
 
   if (leg.depositType === 'INTENTS') {
-    const generated = await api.intentsGenerate({ depositAddress });
-    return {
-      depositAddress,
-      depositMemo: leg.quote.depositMemo,
-      intentHash: generated.intentHash,
-    };
+    try {
+      const generated = await api.intentsGenerate({
+        depositAddress,
+        assetId: leg.originToken.assetId,
+        amountAtomic: leg.amountAtomic,
+        ...(leg.quote.depositMemo ? { memo: leg.quote.depositMemo } : {}),
+      });
+      return {
+        depositAddress,
+        depositMemo: leg.quote.depositMemo,
+        ...(generated.txHash ? { txHash: generated.txHash } : {}),
+        intentHash: generated.intentHash,
+      };
+    } catch (err) {
+      if (err instanceof Fault && err.status === 401) {
+        const verifier =
+          import.meta.env.VITE_NEAR_NETWORK === 'testnet'
+            ? 'verifier.tidepool-sandbox.testnet'
+            : 'intents.near';
+        const executed = await callNearContract({
+          contractId: verifier,
+          methodName: 'mt_transfer',
+          args: {
+            receiver_id: depositAddress,
+            token_id: leg.originToken.assetId,
+            amount: leg.amountAtomic,
+            approval: null,
+            memo: leg.quote.depositMemo ?? null,
+          },
+          deposit: '1',
+          gas: 100_000_000_000_000,
+        });
+        await api
+          .intentsDeposit({
+            txHash: executed.txHash,
+            depositAddress,
+            nearSenderAccount: leg.intentsAccountId ?? leg.originWalletAddress,
+            ...(leg.quote.depositMemo ? { memo: leg.quote.depositMemo } : {}),
+          })
+          .catch(() => undefined);
+        return {
+          depositAddress,
+          depositMemo: leg.quote.depositMemo,
+          txHash: executed.txHash,
+          intentHash: executed.txHash,
+        };
+      }
+      throw err;
+    }
   }
 
+  const matchedLink = links?.find(
+    (l) =>
+      l.network === leg.originWalletNetwork &&
+      l.address.trim().toLowerCase() === leg.originWalletAddress.trim().toLowerCase(),
+  );
+
   if (leg.originWalletNetwork === 'evm') {
-    const { txHash } = await sendEvmOriginTransfer({ leg, depositAddress });
+    const { txHash } = await sendEvmOriginTransfer({
+      leg,
+      depositAddress,
+      preferredRdns: matchedLink?.providerRdns,
+    });
     return { depositAddress, depositMemo: leg.quote.depositMemo, txHash };
   }
 
@@ -1235,6 +1291,7 @@ export interface LegProgressUpdate {
 export async function executeIntentRoute(
   route: IntentRoute,
   onLegProgress?: (index: number, update: LegProgressUpdate) => void,
+  links?: WalletLink[],
 ): Promise<
   Array<{
     depositAddress: string;
@@ -1252,7 +1309,7 @@ export async function executeIntentRoute(
   }> = [];
   for (let i = 0; i < legs.length; i++) {
     onLegProgress?.(i, { state: 'sending' });
-    const res = await executeIntentLeg(legs[i]!);
+    const res = await executeIntentLeg(legs[i]!, links);
     onLegProgress?.(i, {
       state: 'sent',
       txHash: res.txHash,

@@ -475,6 +475,7 @@ export type IntentRoute = {
 
 export type IntentGenerateResponse = {
   mode: 'submitted';
+  txHash?: string;
   intentHash: string;
   correlationId: string;
 };
@@ -849,7 +850,12 @@ export const api = {
       method: 'POST',
       body: body(value),
     }),
-  intentsGenerate: (value: { depositAddress: string }) =>
+  intentsGenerate: (value: {
+    depositAddress: string;
+    assetId?: string;
+    amountAtomic?: string;
+    memo?: string;
+  }) =>
     request<IntentGenerateResponse>('/near/intents/generate', {
       method: 'POST',
       body: body(value),
