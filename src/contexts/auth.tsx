@@ -23,7 +23,14 @@ import {
   type Provider,
 } from '../lib/api';
 import type { User } from '../lib/schema';
-import { requestEvmAccounts } from '../lib/intents';
+import { shortHash } from '../lib/contracts';
+import {
+  extractWalletErrorMessage,
+  requestEvmAccounts,
+  requestSvmAccount,
+} from '../lib/intents';
+import { resetComposeSdk } from '../lib/compose';
+import { clearUserWorkflowCache } from '../hooks/use-workflow';
 import { Disclaimer } from '../components/disclaimer';
 
 export interface WalletLink {
@@ -34,6 +41,8 @@ export interface WalletLink {
   publicKey: string;
   status: 'pending' | 'active' | 'failed';
   transaction: string | null;
+  providerRdns?: string;
+  providerName?: string;
 }
 
 export interface AuthState {
@@ -58,7 +67,8 @@ export interface AuthState {
   linkBusy: boolean;
   linkError: string | null;
   refreshLinks: () => Promise<void>;
-  linkWallet: (network: 'evm' | 'svm') => Promise<void>;
+  linkWallet: (network: 'evm' | 'svm', preferredRdns?: string) => Promise<void>;
+  unlinkWallet: (linkId: string) => Promise<void>;
 }
 
 const Context = createContext<AuthState | null>(null);
@@ -125,7 +135,15 @@ export function Auth({ children }: { children: ReactNode }) {
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
 
+  const prevUserAddrRef = useRef<string | null>(user?.userAddress?.toLowerCase() ?? null);
+
   const setUser = useCallback((next: User | null) => {
+    const nextAddr = next?.userAddress?.toLowerCase() ?? null;
+    if (prevUserAddrRef.current !== nextAddr) {
+      prevUserAddrRef.current = nextAddr;
+      resetComposeSdk();
+      setLinksState(readHydratedLinks(next?.userAddress));
+    }
     setUserState(next);
     writeStorageJson(USER_CACHE_KEY, next);
     if (!next) {
@@ -190,6 +208,21 @@ export function Auth({ children }: { children: ReactNode }) {
       setLinksState([]);
     }
   }, [user?.userAddress, refreshLinks]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onConsentRequired = () => {
+      setDeferred(null);
+      setUserState((prev) => {
+        if (!prev || !prev.consented) return prev;
+        const updated = { ...prev, consented: false };
+        writeStorageJson(USER_CACHE_KEY, updated);
+        return updated;
+      });
+    };
+    window.addEventListener('man0:consent-required', onConsentRequired);
+    return () => window.removeEventListener('man0:consent-required', onConsentRequired);
+  }, []);
 
   function complete(result: AuthPayload): User {
     token(result.token);
@@ -328,37 +361,105 @@ export function Auth({ children }: { children: ReactNode }) {
     }
   }
 
-  async function linkWallet(network: 'evm' | 'svm') {
+  async function linkWallet(network: 'evm' | 'svm', preferredRdns?: string) {
     if (!user) return;
     setLinkBusy(true);
     setLinkError(null);
     try {
-      let address = '';
+      const existingAddresses = links
+        .filter((l) => l.network === network)
+        .map((l) => l.address);
+      const existingLower = new Set(existingAddresses.map((a) => a.trim().toLowerCase()));
+
       if (network === 'evm') {
-        const { sender } = await requestEvmAccounts();
-        address = sender;
+        const resolved = await requestEvmAccounts(undefined, {
+          forceAccountPicker: true,
+          preferredRdns,
+          excludeAddresses: existingAddresses,
+        });
+        const rdnsPayload = resolved.rdns ? { providerRdns: resolved.rdns } : {};
+        const namePayload = resolved.walletName ? { providerName: resolved.walletName } : {};
+
+        try {
+          await api.link({
+            network: 'evm',
+            address: resolved.sender,
+            ...rdnsPayload,
+            ...namePayload,
+          });
+        } catch (err) {
+          if (err instanceof Fault && err.status === 409) {
+            const alternatives = resolved.allAccounts.filter(
+              (a) =>
+                a.trim().toLowerCase() !== resolved.sender.trim().toLowerCase() &&
+                !existingLower.has(a.trim().toLowerCase()),
+            );
+            let linkedAlternative = false;
+            for (const alt of alternatives) {
+              try {
+                await api.link({
+                  network: 'evm',
+                  address: alt,
+                  ...rdnsPayload,
+                  ...namePayload,
+                });
+                linkedAlternative = true;
+                break;
+              } catch (altErr) {
+                if (!(altErr instanceof Fault && altErr.status === 409)) {
+                  throw altErr;
+                }
+              }
+            }
+            if (!linkedAlternative) {
+              throw new Error(
+                `${shortHash(resolved.sender, 6, 4)} is already linked to another man0 account. Check a different account in ${resolved.walletName} (or unlink it from the other account first).`,
+              );
+            }
+          } else {
+            throw err;
+          }
+        }
       } else {
-        const win = window as unknown as {
-          phantom?: {
-            solana?: {
-              connect: () => Promise<{ publicKey: { toString: () => string } }>;
-            };
-          };
-          solana?: {
-            connect: () => Promise<{ publicKey: { toString: () => string } }>;
-          };
-        };
-        const sol = win.phantom?.solana ?? win.solana;
-        if (!sol) throw new Error('No Solana wallet detected.');
-        const resp = await sol.connect();
-        address = resp.publicKey.toString();
+        const resolved = await requestSvmAccount({
+          forceAccountPicker: true,
+          excludeAddresses: existingAddresses,
+        });
+        try {
+          await api.link({
+            network: 'svm',
+            address: resolved.address,
+            ...(resolved.walletName ? { providerName: resolved.walletName } : {}),
+          });
+        } catch (err) {
+          if (err instanceof Fault && err.status === 409) {
+            throw new Error(
+              `${shortHash(resolved.address, 6, 4)} is already linked to another man0 account. Switch accounts in ${resolved.walletName} (or unlink it from the other account first).`,
+            );
+          }
+          throw err;
+        }
       }
 
-      await api.link({ network, address });
       const refreshed = await api.links();
       setLinks(refreshed);
     } catch (err) {
-      setLinkError((err as Error).message || 'Wallet linking failed.');
+      setLinkError(extractWalletErrorMessage(err, 'Wallet linking failed.'));
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function unlinkWallet(linkId: string) {
+    if (!user || !linkId) return;
+    setLinkBusy(true);
+    setLinkError(null);
+    try {
+      await api.unlink(linkId);
+      const refreshed = await api.links();
+      setLinks(refreshed);
+    } catch (err) {
+      setLinkError(extractWalletErrorMessage(err, 'Could not unlink wallet.'));
     } finally {
       setLinkBusy(false);
     }
@@ -376,13 +477,28 @@ export function Auth({ children }: { children: ReactNode }) {
   async function logout(): Promise<void> {
     setBusy(true);
     try {
-      await api.logout();
-      token(null);
-      setUser(null);
-    } catch (err) {
-      setError((err as Error).message);
-      throw err;
+      await api.logout().catch(() => undefined);
     } finally {
+      token(null);
+      resetComposeSdk();
+      clearUserWorkflowCache();
+      setLinks([]);
+      setUser(null);
+      if (typeof sessionStorage !== 'undefined') {
+        try {
+          for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+            const key = sessionStorage.key(i);
+            if (
+              key &&
+              (key.startsWith('man0.session.bal.') || key.startsWith('man0.studio.session.'))
+            ) {
+              sessionStorage.removeItem(key);
+            }
+          }
+        } catch {
+          // Ignore storage access errors
+        }
+      }
       setBusy(false);
     }
   }
@@ -421,6 +537,7 @@ export function Auth({ children }: { children: ReactNode }) {
         linkError,
         refreshLinks,
         linkWallet,
+        unlinkWallet,
       }}
     >
       {children}
