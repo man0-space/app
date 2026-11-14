@@ -47,6 +47,25 @@ export interface MissingConnectorRequirement {
   requestId?: string;
 }
 
+export interface Clarification {
+  id: string;
+  stepId?: string;
+  stepTitle?: string;
+  question: string;
+  options?: string[];
+  acceptedInputs?: string[];
+  defaultHint?: string;
+  required?: boolean;
+}
+
+export interface StepReplacement {
+  from: string;
+  to: string;
+  replacementName?: string;
+  reason: string;
+  at: number;
+}
+
 export interface MissingInputRequirement {
   stepId: string;
   stepLabel: string;
@@ -54,6 +73,9 @@ export interface MissingInputRequirement {
   modelName?: string;
   acceptedInputs: string[];
   questions?: string[];
+  items?: Clarification[];
+  context?: string;
+  canSkipWithDefaults?: boolean;
   reason: string;
   agentWallet?: string;
   runId?: string;
@@ -103,6 +125,7 @@ export type RunStreamEvent =
   | { type: 'thread:init'; threadId: string; runId: string }
   | { type: 'step:start'; stepId: string; label: string; kind: string }
   | { type: 'step:done'; stepId: string; label: string; kind: string; output: string }
+  | { type: 'step:replaced'; stepId: string; label?: string; replacements: StepReplacement[] }
   | {
       type: 'sse:activity';
       id: string;
@@ -338,6 +361,14 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
       missing?: MissingConnectorRequirement[];
       missingInputs?: MissingInputRequirement[];
     };
+    if (
+      response.status === 428 &&
+      !payload.code &&
+      /accept the account agreement/i.test(payload.error || '') &&
+      typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('man0:consent-required'));
+    }
     throw new Fault(
       payload.error || 'Request failed.',
       response.status,
@@ -517,6 +548,7 @@ export type Trace = {
   entryId: string | null;
   billWei: string;
   output: string;
+  replacements?: StepReplacement[];
 };
 
 export type WorkflowAttachment = {
@@ -580,6 +612,14 @@ async function consumeExecutionResponse(
       missing?: MissingConnectorRequirement[];
       missingInputs?: MissingInputRequirement[];
     };
+    if (
+      response.status === 428 &&
+      !payload.code &&
+      /accept the account agreement/i.test(payload.error || '') &&
+      typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('man0:consent-required'));
+    }
     throw new Fault(
       payload.error || 'Request failed.',
       response.status,
@@ -690,6 +730,7 @@ function executeOrStreamRun(
   options?: {
     attachments?: WorkflowAttachment[];
     dry?: boolean;
+    skipClarify?: boolean;
     threadId?: string;
     coordinator?: Coordinator | null;
     connectorDecisions?: ConnectorDecisionItem[];
@@ -711,6 +752,7 @@ function executeOrStreamRun(
       ? { attachments: options.attachments }
       : {}),
     ...(options?.dry !== undefined ? { dry: options.dry } : {}),
+    ...(options?.skipClarify !== undefined ? { skipClarify: options.skipClarify } : {}),
     ...(options?.threadId ? { threadId: options.threadId } : {}),
     ...(options?.coordinator ? { coordinator: options.coordinator } : {}),
     ...(options?.connectorDecisions && options.connectorDecisions.length > 0
@@ -973,13 +1015,27 @@ export const api = {
       method: 'POST',
       body: body(value),
     }),
-  generateBanner: (value: {
-    title?: string;
-    description?: string;
-    logos?: Array<{ name: string; url?: string }>;
-  }) =>
+  generateBanner: (
+    value: {
+      title?: string;
+      description?: string;
+      logos?: Array<{ name: string; url?: string }>;
+    },
+    composeSession?: {
+      token: string;
+      userAddress: string;
+      network: string;
+    },
+  ) =>
     request<{ imageUrl: string; cid: string }>('/generate-banner', {
       method: 'POST',
+      headers: composeSession
+        ? {
+          'x-compose-key': composeSession.token,
+          'x-network-id': composeSession.network,
+          'x-session-user-address': composeSession.userAddress,
+        }
+        : undefined,
       body: body(value),
     }),
   coordinators: () => request<Coordinator[]>('/coordinators'),
@@ -998,7 +1054,13 @@ export const api = {
   streamVibe: async (value: {
     prompt: string;
     flow: Flow;
+    mode?: 'create' | 'edit';
     history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    composeSession?: {
+      token: string;
+      userAddress: string;
+      network: string;
+    };
     signal?: AbortSignal;
     onEvent: (event: VibeStreamEvent) => void;
   }): Promise<{ text: string; flow: Flow } | null> => {
@@ -1009,10 +1071,18 @@ export const api = {
         'content-type': 'application/json',
         accept: 'application/x-ndjson',
         ...(current ? { authorization: `Bearer ${current}` } : {}),
+        ...(value.composeSession
+          ? {
+            'x-compose-key': value.composeSession.token,
+            'x-network-id': value.composeSession.network,
+            'x-session-user-address': value.composeSession.userAddress,
+          }
+          : {}),
       },
       body: body({
         prompt: value.prompt,
         flow: value.flow,
+        ...(value.mode ? { mode: value.mode } : {}),
         ...(value.history ? { history: value.history } : {}),
       }),
     });
@@ -1118,6 +1188,7 @@ export const api = {
     options?: {
       attachments?: WorkflowAttachment[];
       dry?: boolean;
+      skipClarify?: boolean;
       threadId?: string;
       coordinator?: Coordinator | null;
       connectorDecisions?: ConnectorDecisionItem[];
@@ -1143,6 +1214,7 @@ export const api = {
     options?: {
       attachments?: WorkflowAttachment[];
       dry?: boolean;
+      skipClarify?: boolean;
       threadId?: string;
       coordinator?: Coordinator | null;
       connectorDecisions?: ConnectorDecisionItem[];

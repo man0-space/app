@@ -165,6 +165,7 @@ export type Thread = {
   missingInputs: Array<Record<string, unknown>>;
   missingConnectors: Array<Record<string, unknown>>;
   error?: string | null;
+  billing?: Record<string, unknown> | null;
   execution?: Record<string, unknown> | null;
   created: string;
   updated: string;
