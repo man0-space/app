@@ -35,7 +35,8 @@
     "tests/routes.test.ts",
     "tests/contracts.test.ts",
     "tests/catalog.test.ts",
-    "tests/analytics.test.ts"
+    "tests/analytics.test.ts",
+    "tests/intents-wallet.test.ts"
   ],
   "exclude": [
     "src/**/*.test.ts",
