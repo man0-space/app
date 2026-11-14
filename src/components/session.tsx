@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ActiveSessionMetadata } from '@compose-market/sdk';
 import { useAuth } from '../contexts/auth';
 import {
@@ -13,6 +13,7 @@ import {
   nearNetworkId,
   type Network,
   readSession,
+  resetComposeSdk,
   revokeSession,
   sessionNetworkFor,
 } from '../lib/compose';
@@ -81,18 +82,42 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [approvalStep, setApprovalStep] = useState<ApprovalStep>('idle');
   const [lastApprovalTxUrl, setLastApprovalTxUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const activeUserRef = useRef<string | null>(userAddress);
+  const refreshSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (activeUserRef.current !== userAddress) {
+      activeUserRef.current = userAddress;
+      refreshSeqRef.current += 1;
+      const cached = readCachedBalance(userAddress);
+      setSessionState(null);
+      setSpendingAddress(cached?.spendingAddress ?? userAddress);
+      setSessionNetwork(cached?.network ?? nearNetworkId());
+      setMainBalanceWei(cached?.mainBalanceWei ?? '0');
+      setSpendingBalanceWei(cached?.spendingBalanceWei ?? '0');
+      setLastApprovalTxUrl(null);
+      setError(null);
+      if (!userAddress) {
+        resetComposeSdk();
+      }
+    }
+  }, [userAddress]);
 
   const refresh = useCallback(async () => {
-    if (!userAddress) {
+    const seq = ++refreshSeqRef.current;
+    const targetUser = userAddress;
+    if (!targetUser) {
+      resetComposeSdk();
       setSessionState(null);
       setSpendingAddress(null);
       setMainBalanceWei('0');
       setSpendingBalanceWei('0');
       setLastApprovalTxUrl(null);
       setError(null);
+      setLoading(false);
       return;
     }
-    const warm = readCachedBalance(userAddress);
+    const warm = readCachedBalance(targetUser);
     if (warm) {
       setSpendingAddress(warm.spendingAddress);
       setSessionNetwork(warm.network);
@@ -104,12 +129,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const bal = await api.nearBalance();
+      if (refreshSeqRef.current !== seq || activeUserRef.current !== targetUser) {
+        return;
+      }
       const net = sessionNetworkFor(bal.network);
       setSessionNetwork(net);
       setSpendingAddress(bal.spendingAddress);
       setMainBalanceWei(bal.mainBalanceWei);
       setSpendingBalanceWei(bal.spendingBalanceWei);
-      writeCachedBalance(userAddress, {
+      writeCachedBalance(targetUser, {
         spendingAddress: bal.spendingAddress,
         mainBalanceWei: bal.mainBalanceWei,
         spendingBalanceWei: bal.spendingBalanceWei,
@@ -117,6 +145,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
 
       let active = await readSession(bal.spendingAddress, net).catch(() => null);
+      if (refreshSeqRef.current !== seq || activeUserRef.current !== targetUser) {
+        return;
+      }
       const activeRemaining = BigInt(active?.budgetRemaining ?? '0');
       if (
         BigInt(bal.spendingBalanceWei) > 0n &&
@@ -127,13 +158,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           activeRemaining <= 0n)
       ) {
         await activateSession(bal.spendingAddress, bal.spendingBalanceWei, net);
+        if (refreshSeqRef.current !== seq || activeUserRef.current !== targetUser) {
+          return;
+        }
         active = await readSession(bal.spendingAddress, net).catch(() => null);
       }
-      setSessionState(active);
+      if (refreshSeqRef.current === seq && activeUserRef.current === targetUser) {
+        setSessionState(active);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load balance');
+      if (refreshSeqRef.current === seq && activeUserRef.current === targetUser) {
+        setError(err instanceof Error ? err.message : 'Unable to load balance');
+      }
     } finally {
-      setLoading(false);
+      if (refreshSeqRef.current === seq && activeUserRef.current === targetUser) {
+        setLoading(false);
+      }
     }
   }, [userAddress]);
 
