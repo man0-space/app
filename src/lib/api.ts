@@ -1235,12 +1235,15 @@ export const api = {
       headers: condition(flow.modified),
     }),
   current: () => request<Flow | null>('/draft'),
+  drafts: () => request<Flow[]>('/drafts'),
   draft: (flow: Flow, modified?: string) =>
     request<Flow>('/draft', {
       method: 'PUT',
       body: body(flow),
       headers: condition(modified),
     }),
+  deleteDraft: (id: string) =>
+    request<void>(`/draft/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   clearDraft: () => request<void>('/draft', { method: 'DELETE' }),
   analytics: (params?: {
     from?: string;
