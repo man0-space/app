@@ -276,12 +276,12 @@ export function mergeTotals(left: Totals, right: Totals): Totals {
         : lCount === 0
           ? { count: rCount, averageMs: rAvg, p50Ms: rP50, p95Ms: rP95, p99Ms: rP99 }
           : {
-              count: totalCount,
-              averageMs: (lAvg * lCount + rAvg * rCount) / totalCount,
-              p50Ms: (lP50 * lCount + rP50 * rCount) / totalCount,
-              p95Ms: Math.max(lP95, rP95),
-              p99Ms: Math.max(lP99, rP99),
-            };
+            count: totalCount,
+            averageMs: (lAvg * lCount + rAvg * rCount) / totalCount,
+            p50Ms: (lP50 * lCount + rP50 * rCount) / totalCount,
+            p95Ms: Math.max(lP95, rP95),
+            p99Ms: Math.max(lP99, rP99),
+          };
 
   return {
     requests: {
@@ -349,7 +349,7 @@ function mergeBreakdowns(lists: Breakdown[][]): Breakdown[] {
   return [...byKey.values()];
 }
 
-export function mergeAnalyticsResponses(
+export function mergeAnalytics(
   responses: readonly Response[],
   fallbackFilters: InferenceAnalytics.InferenceAnalyticsFilters = {},
 ): Response {
@@ -577,7 +577,7 @@ export function summarize(response: Response): Summary {
         const computedTotalTokens =
           entry.totals.usage.metrics.total_tokens ||
           pickMetric(entry.totals.usage.metrics, INPUT_TOKEN_KEYS) +
-            pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS);
+          pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS);
         return {
           subject: entry.key,
           modelId: entry.key,
@@ -604,7 +604,7 @@ export function summarize(response: Response): Summary {
         tokens:
           entry.totals.usage.metrics.total_tokens ||
           pickMetric(entry.totals.usage.metrics, INPUT_TOKEN_KEYS) +
-            pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS),
+          pickMetric(entry.totals.usage.metrics, OUTPUT_TOKEN_KEYS),
         pct:
           totalUsd > 0
             ? (atomicToUsd(entry.totals.billing.finalAmountAtomic) / totalUsd) * 100
@@ -830,4 +830,60 @@ export function resolveExplorerTxUrl(
   if (lower === 'eip155:42161') return `https://arbiscan.io/tx/${encodeURIComponent(txHash)}`;
   if (lower === 'eip155:43114') return `https://snowtrace.io/tx/${encodeURIComponent(txHash)}`;
   return externalWalletExplorerUrl('evm', txHash).replace('/address/', '/tx/');
+}
+
+// =============================================================================
+// Compose Analytics Subject & SSE Reconciliation Helpers
+// =============================================================================
+
+export function isNear(value: string | undefined | null): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim();
+  if (normalized.length < 2 || normalized.length > 64) return false;
+  if (/^0s[0-9a-f]{40}$/.test(normalized)) return true;
+  if (/^0u[0123456789abcdefghjkmnpqrstvwxyz]{51}[0g]$/.test(normalized)) return true;
+  if (/^0x[0-9a-fA-F]{40}$/.test(normalized)) return false;
+  if (/^[0-9a-f]{64}$/.test(normalized)) return true;
+  return /^(([a-z\d]+[-_])*[a-z\d]+\.)+([a-z\d]+[-_])*[a-z\d]+$/.test(normalized);
+}
+
+export function resolveAnalytics(input: {
+  userAddress?: string | null;
+  spendingAddress?: string | null;
+}): string[] {
+  if (!input.userAddress?.trim()) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const candidates = [input.spendingAddress, input.userAddress];
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const trimmed = raw.trim();
+    if (!isNear(trimmed)) continue;
+    const dedupKey = trimmed.toLowerCase();
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+export interface AnalyticsSseStreamState {
+  seenInitialReady: boolean;
+}
+
+export function refreshSse(
+  eventType: string | undefined | null,
+  state: AnalyticsSseStreamState,
+): boolean {
+  if (eventType === 'invalidate') {
+    return true;
+  }
+  if (eventType === 'ready') {
+    if (!state.seenInitialReady) {
+      state.seenInitialReady = true;
+      return false;
+    }
+    return true;
+  }
+  return false;
 }

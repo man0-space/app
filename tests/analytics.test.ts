@@ -4,7 +4,10 @@ import type { InferenceAnalytics } from '@compose-market/sdk';
 import {
   emptyAnalyticsResponse,
   formatModelTypeLabel,
-  mergeAnalyticsResponses,
+  isNear,
+  mergeAnalytics,
+  resolveAnalytics,
+  refreshSse,
   summarize,
   tickTime,
   zeroFillTimeline,
@@ -64,7 +67,7 @@ function sampleTotals(overrides?: {
   };
 }
 
-test('mergeAnalyticsResponses aggregates multi-subject totals, deduplicates rows, and merges breakdowns', () => {
+test('mergeAnalytics aggregates multi-subject totals, deduplicates rows, and merges breakdowns', () => {
   const filters: InferenceAnalytics.InferenceAnalyticsFilters = {
     from: '2026-11-10T00:00:00.000Z',
     to: '2026-11-12T00:00:00.000Z',
@@ -119,7 +122,7 @@ test('mergeAnalyticsResponses aggregates multi-subject totals, deduplicates rows
     },
   ];
 
-  const merged = mergeAnalyticsResponses([first, second], filters);
+  const merged = mergeAnalytics([first, second], filters);
   assert.equal(merged.totals.requests.total, 5);
   assert.equal(merged.totals.billing.finalAmountAtomic, '4000000');
   assert.equal(merged.breakdowns.models.length, 1);
@@ -166,7 +169,7 @@ test('toggleNetworkSelection and formatModelTypeLabel produce deterministic UI s
   assert.equal(formatModelTypeLabel('chat'), 'Chat');
 });
 
-test('mergeAnalyticsResponses preserves P95/P99 latency when empty subjects omit percentile fields and falls back to request samples', () => {
+test('mergeAnalytics preserves P95/P99 latency when empty subjects omit percentile fields and falls back to request samples', () => {
   const filters: InferenceAnalytics.InferenceAnalyticsFilters = {
     from: '2026-11-10T00:00:00.000Z',
     to: '2026-11-11T00:00:00.000Z',
@@ -186,7 +189,7 @@ test('mergeAnalyticsResponses preserves P95/P99 latency when empty subjects omit
     p99Ms: undefined as unknown as number,
   };
 
-  const merged = mergeAnalyticsResponses([active, emptySubject], filters);
+  const merged = mergeAnalytics([active, emptySubject], filters);
   assert.equal(Number.isFinite(merged.totals.latency.p95Ms), true);
   assert.equal(merged.totals.latency.p95Ms, 490);
   const summary = summarize(merged);
@@ -332,4 +335,67 @@ test('earn royalty helpers classify paidRuns strictly when creator royalties > 0
     undefined,
   );
   assert.equal(mergedZeroRoyalty?.paidRuns, 0);
+});
+
+test('resolveAnalytics keeps deduplicated NEAR Compose subjects and rejects external EVM/SVM EOAs', () => {
+  const universalNear = '0uv4zk76ahgxd8az198c2dpd52jk8ek7apj5ncp0a1he0nbdrefatg';
+  const implicitNear = '17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1';
+  const namedNear = 'jabyl.near';
+  const evmEoa = '0x89caf60b0e742b9299e14d611b205870207b5ce3';
+  const svmEoa = '139ckThCRxYDDFXgfRjH4TCiaTJETbb1UMLwACvWJ1fq';
+
+  assert.equal(isNear(universalNear), true);
+  assert.equal(isNear(implicitNear), true);
+  assert.equal(isNear(namedNear), true);
+  assert.equal(isNear(evmEoa), false);
+  assert.equal(isNear(svmEoa), false);
+
+  assert.deepEqual(
+    resolveAnalytics({
+      userAddress: universalNear,
+      spendingAddress: implicitNear,
+    }),
+    [implicitNear, universalNear],
+  );
+
+  assert.deepEqual(
+    resolveAnalytics({
+      userAddress: universalNear,
+      spendingAddress: universalNear,
+    }),
+    [universalNear],
+  );
+
+  assert.deepEqual(
+    resolveAnalytics({
+      userAddress: universalNear,
+      spendingAddress: evmEoa,
+    }),
+    [universalNear],
+  );
+
+  assert.deepEqual(
+    resolveAnalytics({
+      userAddress: null,
+      spendingAddress: implicitNear,
+    }),
+    [],
+  );
+});
+
+test('refreshSse skips initial mount ready and lease frames while refreshing on invalidate and reconnect ready', () => {
+  const state = { seenInitialReady: false };
+
+  // Initial SSE handshake right after mount snapshot should NOT trigger a duplicate GET
+  assert.equal(refreshSse('ready', state), false);
+  assert.equal(state.seenInitialReady, true);
+
+  // Lease rotation notification should NOT trigger a refresh before reconnect
+  assert.equal(refreshSse('lease', state), false);
+
+  // Live telemetry invalidation MUST trigger a refresh
+  assert.equal(refreshSse('invalidate', state), true);
+
+  // Subsequent ready frame after lease rotation or reconnect MUST reconcile
+  assert.equal(refreshSse('ready', state), true);
 });

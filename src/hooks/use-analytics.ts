@@ -7,7 +7,9 @@ import {
   emptyAnalyticsResponse,
   mapFeedItem,
   mapRequestRow,
-  mergeAnalyticsResponses,
+  mergeAnalytics,
+  resolveAnalytics,
+  refreshSse,
   summarize,
   type FeedItem,
   type RequestRow,
@@ -136,35 +138,28 @@ export function useFacilitatorChains(): {
   return { chains: supported, loading };
 }
 
-function normalizeSubject(addr: string): string {
-  const trimmed = addr.trim();
-  return trimmed.startsWith('0x') ? trimmed.toLowerCase() : trimmed;
+function isNotFoundError(reason: unknown): boolean {
+  return (
+    typeof reason === 'object' &&
+    reason !== null &&
+    'status' in reason &&
+    (reason as { status?: unknown }).status === 404
+  );
 }
 
 export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyticsReturn {
-  const { user, links } = useAuth();
+  const { user } = useAuth();
   const sessionCtx = useContext(SessionContext);
   const spendingAddress = sessionCtx?.spendingAddress ?? null;
 
-  const subjects = useMemo<string[]>(() => {
-    if (!user?.userAddress) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    const candidates = [
-      spendingAddress,
-      user.userAddress,
-      ...links.filter((l) => l.status !== 'failed').map((l) => l.address),
-    ];
-    for (const raw of candidates) {
-      if (!raw || !raw.trim()) continue;
-      const norm = normalizeSubject(raw);
-      const dedupKey = norm.toLowerCase();
-      if (seen.has(dedupKey)) continue;
-      seen.add(dedupKey);
-      out.push(norm);
-    }
-    return out;
-  }, [user?.userAddress, spendingAddress, links]);
+  const subjects = useMemo<string[]>(
+    () =>
+      resolveAnalytics({
+        userAddress: user?.userAddress,
+        spendingAddress,
+      }),
+    [user?.userAddress, spendingAddress],
+  );
 
   const owner = user?.userAddress ?? null;
 
@@ -230,11 +225,13 @@ export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyt
           )
           .map((item) => item.value);
 
-        if (fulfilled.length === 0) {
-          const firstRejected = settled.find(
-            (item): item is PromiseRejectedResult => item.status === 'rejected',
-          );
-          const reason = firstRejected?.reason;
+        const rejected = settled.filter(
+          (item): item is PromiseRejectedResult => item.status === 'rejected',
+        );
+
+        if (fulfilled.length === 0 && rejected.some((item) => !isNotFoundError(item.reason))) {
+          const firstNon404 = rejected.find((item) => !isNotFoundError(item.reason));
+          const reason = firstNon404?.reason;
           throw reason instanceof Error
             ? reason
             : new Error('Unable to load inference spending telemetry.');
@@ -253,7 +250,7 @@ export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyt
 
         const merged =
           fulfilled.length > 0
-            ? mergeAnalyticsResponses(
+            ? mergeAnalytics(
               fulfilled.map((f) => f.response),
               rollingFilters,
             )
@@ -278,9 +275,13 @@ export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyt
     void fetchSnapshot(hasSummaryRef.current);
   }, [resetKey, fetchSnapshot]);
 
+  const fetchSnapshotRef = useRef(fetchSnapshot);
+  fetchSnapshotRef.current = fetchSnapshot;
+
   // Live SSE reconciliation via @compose-market/sdk analytics.subscribe + window focus/online
   useEffect(() => {
-    if (subjects.length === 0) return;
+    const activeSubjects = subjectsKey ? subjectsKey.split('|') : [];
+    if (activeSubjects.length === 0) return;
 
     const controller = new AbortController();
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -288,21 +289,23 @@ export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyt
     const scheduleRefresh = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        void fetchSnapshot(true);
+        void fetchSnapshotRef.current(true);
       }, 350);
     };
 
-    for (const subject of subjects) {
+    for (const subject of activeSubjects) {
       void (async () => {
+        const streamState = { seenInitialReady: false };
         try {
           const stream = compose.analytics.subscribe({
             userAddress: subject,
-            ...(input.networks.length > 0 ? { networks: [...input.networks] } : {}),
             signal: controller.signal,
           });
           for await (const event of stream) {
             if (controller.signal.aborted) break;
-            if (event) scheduleRefresh();
+            if (refreshSse(event?.type, streamState)) {
+              scheduleRefresh();
+            }
           }
         } catch {
           // SSE stream disconnect or abort — silent fallback to focus/manual refresh
@@ -320,7 +323,7 @@ export function useSpentAnalytics(input: UseSpentAnalyticsInput): UseSpentAnalyt
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onFocus);
     };
-  }, [subjectsKey, networksKey, fetchSnapshot]);
+  }, [subjectsKey]);
 
   const hasMoreRequests = useMemo(() => {
     if (!summary) return false;

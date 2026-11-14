@@ -144,34 +144,45 @@ export function useWorkflows() {
     [],
   );
 
+  const activeUserAddrRef = useRef<string | null>(userAddr);
+  activeUserAddrRef.current = userAddr;
+
   useEffect(() => {
     setUserWorkflowsState(getInitialUserWorkflows(userAddr));
   }, [userAddr]);
 
   const refreshMarket = useCallback(async () => {
+    const requestAddr = userAddr;
     const hasWarmCache =
       (memoryMarketCache && memoryMarketCache.length > 0) ||
-      (userAddr ? (memoryUserCache.get(userAddr.toLowerCase())?.length ?? 0) > 0 : false);
+      (requestAddr ? (memoryUserCache.get(requestAddr.toLowerCase())?.length ?? 0) > 0 : false);
     if (!hasWarmCache) {
       setLoading(true);
     }
     setError(null);
     try {
-      const canFetchOwn = Boolean(userAddr && authenticated());
+      const canFetchOwn = Boolean(requestAddr && authenticated());
       const [marketList, ownList] = await Promise.all([
         api.market(),
         canFetchOwn ? api.workflows() : Promise.resolve<Listing[]>([]),
       ]);
       updateMarketWorkflows(marketList);
-      if (canFetchOwn && userAddr) {
-        updateUserWorkflows(userAddr, ownList);
+      if (activeUserAddrRef.current !== requestAddr) {
+        return;
+      }
+      if (canFetchOwn && requestAddr && authenticated()) {
+        updateUserWorkflows(requestAddr, ownList);
       } else {
         setUserWorkflowsState([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load workflows');
+      if (activeUserAddrRef.current === requestAddr) {
+        setError(err instanceof Error ? err.message : 'Unable to load workflows');
+      }
     } finally {
-      setLoading(false);
+      if (activeUserAddrRef.current === requestAddr) {
+        setLoading(false);
+      }
     }
   }, [updateMarketWorkflows, updateUserWorkflows, userAddr]);
 
