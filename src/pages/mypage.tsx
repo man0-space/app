@@ -99,11 +99,12 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
         explorerUrl: explorerAccountUrl(user.userAddress),
       },
     ];
-    const seen = new Set<string>(['near']);
+    const seen = new Set<string>([`near:${user.userAddress.toLowerCase()}`]);
     for (const item of links) {
       const net = item.network === 'svm' ? 'svm' : 'evm';
-      if (seen.has(net)) continue;
-      seen.add(net);
+      const key = `${net}:${item.address.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push({
         network: net,
         label: net.toUpperCase(),
@@ -280,6 +281,36 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
       await deletePublishedWorkflow(item.published);
       onNotify('Workflow deleted');
     }
+  };
+
+  const renderMintTxBadge = (item: UnifiedItem, inline = false) => {
+    const mintTxHash = item.published?.terms?.txHash?.trim() || null;
+    const mintContractId = item.published?.terms?.contractId?.trim() || undefined;
+    const mintTxUrl = mintTxHash ? explorerTxUrl(mintTxHash, mintContractId) : null;
+    if (!mintTxUrl || !mintTxHash) return null;
+    const mintNetName =
+      mintContractId && mintContractId.endsWith('.testnet') ? 'NEAR Testnet' : 'NEAR';
+    return (
+      <Tooltip
+        title={mintNetName}
+        description={`Mint tx · ${shortHash(mintTxHash, 6, 4)}`}
+      >
+        <a
+          href={mintTxUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`wf-media-net-link ${inline ? 'is-inline' : ''}`.trim()}
+          aria-label={`View ${item.title} mint transaction on ${mintNetName}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <img
+            src="/networks/NEAR-2.png"
+            alt=""
+            className="wf-media-net-logo"
+          />
+        </a>
+      </Tooltip>
+    );
   };
 
   return (
@@ -475,34 +506,7 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
             ) : layoutMode === 'cards' ? (
               <div className="wf-grid">
                 {pageItems.map((item) => {
-                  const mintTxHash = item.published?.terms?.txHash?.trim() || null;
-                  const mintContractId = item.published?.terms?.contractId?.trim() || undefined;
-                  const mintTxUrl = mintTxHash ? explorerTxUrl(mintTxHash, mintContractId) : null;
-                  const mintNetName =
-                    mintContractId && mintContractId.endsWith('.testnet') ? 'NEAR Testnet' : 'NEAR';
-                  const renderMintTxBadge = (inline = false) =>
-                    mintTxUrl && mintTxHash ? (
-                      <Tooltip
-                        title={mintNetName}
-                        description={`Mint tx · ${shortHash(mintTxHash, 6, 4)}`}
-                      >
-                        <a
-                          href={mintTxUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`wf-media-net-link ${inline ? 'is-inline' : ''}`.trim()}
-                          aria-label={`View mint transaction on ${mintNetName}`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <img
-                            src="/networks/NEAR-2.png"
-                            alt={mintNetName}
-                            className="wf-media-net-logo"
-                          />
-                        </a>
-                      </Tooltip>
-                    ) : null;
-
+                  const bannerMintBadge = renderMintTxBadge(item, false);
                   return (
                     <article
                       key={item.id}
@@ -512,12 +516,12 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                       {item.banner ? (
                         <div className="wf-card-banner">
                           <img src={item.banner} alt="" className="wf-card-banner-img" />
-                          {mintTxUrl ? (
+                          {bannerMintBadge ? (
                             <div
                               className="wf-card-media-badge-right"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              {renderMintTxBadge(false)}
+                              {bannerMintBadge}
                             </div>
                           ) : null}
                         </div>
@@ -529,7 +533,7 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                           {item.kind === 'published' ? 'PUBLISHED' : 'DRAFT'}
                         </span>
                         <div className="wf-card-top-meta">
-                          {!item.banner ? renderMintTxBadge(true) : null}
+                          {!item.banner ? renderMintTxBadge(item, true) : null}
                           <TaskPills
                             tasks={item.tasks}
                             maxVisible={2}
@@ -542,75 +546,75 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                         </div>
                       </div>
 
-                    <h3 className="wf-card-title">
-                      <button
-                        type="button"
-                        className="wf-card-title-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenItem(item);
-                        }}
-                      >
-                        {item.title}
-                      </button>
-                    </h3>
-                    <p className="wf-card-desc">{item.description}</p>
+                      <h3 className="wf-card-title">
+                        <button
+                          type="button"
+                          className="wf-card-title-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenItem(item);
+                          }}
+                        >
+                          {item.title}
+                        </button>
+                      </h3>
+                      <p className="wf-card-desc">{item.description}</p>
 
-                    <div className="wf-card-footer" onClick={(e) => e.stopPropagation()}>
-                      <span className="wf-meta-text">
-                        {item.stepsCount} step{item.stepsCount === 1 ? '' : 's'}
-                        {item.feePercent > 0 ? ` · +${item.feePercent}%` : ''}
-                      </span>
-                      <div className="wf-card-actions">
-                        {item.draft ? (
-                          <>
-                            <Button
-                              icon={<Edit3 size={13} />}
-                              tooltip="Edit"
-                              size="xs"
-                              onClick={() => onOpenDraft(item.draft!.flow)}
-                            />
-                            <Button
-                              icon={<Play size={13} />}
-                              tooltip="Run"
-                              variant="primary"
-                              size="xs"
-                              onClick={() => void handleRunItem(item)}
-                            />
-                            <Button
-                              icon={<Share2 size={13} />}
-                              tooltip="Publish"
-                              size="xs"
-                              onClick={() => setPublishFlow(item.draft!.flow)}
-                            />
-                          </>
-                        ) : item.published ? (
-                          <>
-                            <Button
-                              icon={<Eye size={13} />}
-                              tooltip="View details"
-                              size="xs"
-                              onClick={() => setDetailWorkflow(item.published!)}
-                            />
-                            <Button
-                              icon={<Play size={13} />}
-                              tooltip="Run"
-                              variant="primary"
-                              size="xs"
-                              onClick={() => void handleRunItem(item)}
-                            />
-                          </>
-                        ) : null}
-                        <Button
-                          icon={<Trash2 size={13} />}
-                          tooltip="Delete"
-                          variant="danger"
-                          size="xs"
-                          onClick={() => void handleDeleteItem(item)}
-                        />
+                      <div className="wf-card-footer" onClick={(e) => e.stopPropagation()}>
+                        <span className="wf-meta-text">
+                          {item.stepsCount} step{item.stepsCount === 1 ? '' : 's'}
+                          {item.feePercent > 0 ? ` · +${item.feePercent}%` : ''}
+                        </span>
+                        <div className="wf-card-actions">
+                          {item.draft ? (
+                            <>
+                              <Button
+                                icon={<Edit3 size={13} />}
+                                tooltip="Edit"
+                                size="xs"
+                                onClick={() => onOpenDraft(item.draft!.flow)}
+                              />
+                              <Button
+                                icon={<Play size={13} />}
+                                tooltip="Run"
+                                variant="primary"
+                                size="xs"
+                                onClick={() => void handleRunItem(item)}
+                              />
+                              <Button
+                                icon={<Share2 size={13} />}
+                                tooltip="Publish"
+                                size="xs"
+                                onClick={() => setPublishFlow(item.draft!.flow)}
+                              />
+                            </>
+                          ) : item.published ? (
+                            <>
+                              <Button
+                                icon={<Eye size={13} />}
+                                tooltip="View details"
+                                size="xs"
+                                onClick={() => setDetailWorkflow(item.published!)}
+                              />
+                              <Button
+                                icon={<Play size={13} />}
+                                tooltip="Run"
+                                variant="primary"
+                                size="xs"
+                                onClick={() => void handleRunItem(item)}
+                              />
+                            </>
+                          ) : null}
+                          <Button
+                            icon={<Trash2 size={13} />}
+                            tooltip="Delete"
+                            variant="danger"
+                            size="xs"
+                            onClick={() => void handleDeleteItem(item)}
+                          />
+                        </div>
                       </div>
-                    </div>
-                  </article>
+                    </article>
                   );
                 })}
               </div>
@@ -790,6 +794,14 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                             alt=""
                             className="wf-card-banner-img"
                           />
+                          {renderMintTxBadge(selectedColumnItem, false) ? (
+                            <div
+                              className="wf-card-media-badge-right"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {renderMintTxBadge(selectedColumnItem, false)}
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                       <div className="wf-card-top">
@@ -798,9 +810,14 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                         >
                           {selectedColumnItem.kind.toUpperCase()}
                         </span>
-                        <span className="wf-meta-text">
-                          {selectedColumnItem.stepsCount} steps
-                        </span>
+                        <div className="wf-card-top-meta">
+                          {!selectedColumnItem.banner
+                            ? renderMintTxBadge(selectedColumnItem, true)
+                            : null}
+                          <span className="wf-meta-text">
+                            {selectedColumnItem.stepsCount} steps
+                          </span>
+                        </div>
                       </div>
                       <TaskPills tasks={selectedColumnItem.tasks} />
                       <h3>{selectedColumnItem.title}</h3>
@@ -809,11 +826,11 @@ export function MyPage({ onOpenDraft, onNewWorkflow, onNotify }: MyPageProps) {
                         <CoordinatorField
                           value={selectedColumnItem.draft.flow.coordinator ?? null}
                           onNotify={onNotify}
-                          onChange={(nextCoord) => {
+                          onChange={(nextCoordinator) => {
                             void saveDraftItem(
                               {
                                 ...selectedColumnItem.draft!.flow,
-                                coordinator: nextCoord,
+                                coordinator: nextCoordinator,
                               },
                               selectedColumnItem.draft!.title,
                               selectedColumnItem.draft!.id,
