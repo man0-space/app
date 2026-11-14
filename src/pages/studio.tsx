@@ -111,6 +111,19 @@ function hasWipContent(flow: Flow): boolean {
   return Boolean(trimmedName && !/^unknown(?:\s*#\d+)?$/i.test(trimmedName));
 }
 
+function formatWipRelativeAge(iso?: string): string {
+  if (!iso) return 'now';
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return 'now';
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h`;
+  return `${Math.floor(diffHr / 24)}d`;
+}
+
 function applyVibePatchToFlow(curr: Flow, patch: VibePatch): Flow {
   const modified = new Date().toISOString();
   switch (patch.op) {
@@ -289,11 +302,11 @@ function StudioInner({
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [generatingBanner, setGeneratingBanner] = useState(false);
 
+  const [vibePrompt, setVibePrompt] = useState('');
   const [vibeBusy, setVibeBusy] = useState(false);
   const [vibeStatus, setVibeStatus] = useState<string | null>(null);
   const [vibePreview, setVibePreview] = useState('');
   const [vibeError, setVibeError] = useState<string | null>(null);
-  const [vibeHistory, setVibeHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const vibeAbortRef = useRef<AbortController | null>(null);
 
   const [testInput, setTestInput] = useState('');
@@ -302,6 +315,9 @@ function StudioInner({
     flow.coordinator ?? null,
   );
   const [pausedTestThreadId, setPausedTestThreadId] = useState<string | null>(null);
+  const pausedTestContextRef = useRef<{ flowId: string; graphSig: string; input: string } | null>(
+    null,
+  );
   const [dryTest, setDryTest] = useState(true);
   const [testing, setTesting] = useState(false);
   const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
@@ -332,9 +348,42 @@ function StudioInner({
   const [past, setPast] = useState<Flow[]>([]);
   const [future, setFuture] = useState<Flow[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
+  const [wipDrafts, setWipDrafts] = useState<Flow[]>([]);
   const instanceRef = useRef<ReactFlowInstance<Block, Link> | null>(null);
   const hydratedForUserRef = useRef<string | null>(null);
   const lastSyncedDraftJsonRef = useRef<string | null>(null);
+
+  const testGraphSignature = useMemo(
+    () =>
+      `${flow.nodes.map((n) => `${n.id}:${n.data.entry?.id ?? ''}:${n.data.note}`).join('|')}::${flow.edges.map((e) => `${e.source}->${e.target}`).join('|')}`,
+    [flow.edges, flow.nodes],
+  );
+
+  useEffect(() => {
+    const ctx = pausedTestContextRef.current;
+    if (!ctx) return;
+    if (
+      ctx.flowId !== flow.id ||
+      ctx.graphSig !== testGraphSignature ||
+      ctx.input !== testInput.trim()
+    ) {
+      pausedTestContextRef.current = null;
+      setPausedTestThreadId(null);
+      setMissingConnectors([]);
+      setMissingInputs([]);
+    }
+  }, [flow.id, testGraphSignature, testInput]);
+
+  const refreshWipDrafts = useCallback(async () => {
+    if (!user?.consented || !user.userAddress || !authenticated()) {
+      setWipDrafts([]);
+      return;
+    }
+    const list = await api.drafts().catch(() => null);
+    if (list) {
+      setWipDrafts(list.filter((item) => hasWipContent(item)));
+    }
+  }, [user?.consented, user?.userAddress]);
 
   const catalogAbortRef = useRef<AbortController | null>(null);
   const refreshCatalog = useCallback((force = false) => {
@@ -368,52 +417,12 @@ function StudioInner({
     if (!userAddr || !authenticated()) {
       hydratedForUserRef.current = null;
       lastSyncedDraftJsonRef.current = null;
+      setWipDrafts([]);
       return;
     }
-    if (openedFromWorkspaceId && openedFromWorkspaceId === flow.id) {
-      hydratedForUserRef.current = userAddr;
-      return;
-    }
-    if (hydratedForUserRef.current === userAddr) {
-      return;
-    }
-
-    let cancelled = false;
-    void api
-      .current()
-      .then((wip) => {
-        if (cancelled) return;
-        hydratedForUserRef.current = userAddr;
-        if (wip) {
-          lastSyncedDraftJsonRef.current = JSON.stringify(wip);
-          setFlow((curr) => (hasWipContent(curr) ? curr : wip));
-        } else {
-          lastSyncedDraftJsonRef.current = null;
-          const nextDefault = computeDefaultUnknownName();
-          setFlow((curr) =>
-            hasWipContent(curr) || curr.name === nextDefault
-              ? curr
-              : { ...curr, name: nextDefault },
-          );
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          hydratedForUserRef.current = userAddr;
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    user?.consented,
-    user?.userAddress,
-    openedFromWorkspaceId,
-    flow.id,
-    computeDefaultUnknownName,
-    setFlow,
-  ]);
+    hydratedForUserRef.current = userAddr;
+    void refreshWipDrafts();
+  }, [user?.consented, user?.userAddress, refreshWipDrafts]);
 
   useEffect(() => {
     if (openedFromWorkspaceId && openedFromWorkspaceId === flow.id) return;
@@ -431,10 +440,7 @@ function StudioInner({
     if (openedFromWorkspaceId && openedFromWorkspaceId === flow.id) return;
 
     if (!hasWipContent(flow)) {
-      if (lastSyncedDraftJsonRef.current !== null) {
-        lastSyncedDraftJsonRef.current = null;
-        void api.clearDraft().catch(() => undefined);
-      }
+      lastSyncedDraftJsonRef.current = null;
       return;
     }
 
@@ -446,6 +452,7 @@ function StudioInner({
         .draft(flow)
         .then(() => {
           lastSyncedDraftJsonRef.current = serialized;
+          setWipDrafts((prev) => [flow, ...prev.filter((d) => d.id !== flow.id)].slice(0, 8));
         })
         .catch(() => undefined);
     }, 400);
@@ -728,8 +735,12 @@ function StudioInner({
     lastAutoLayoutKeyRef.current = '';
     lastSyncedDraftJsonRef.current = null;
     onClearOpenedFromWorkspace?.();
+    pausedTestContextRef.current = null;
+    setPausedTestThreadId(null);
+    setMissingConnectors([]);
+    setMissingInputs([]);
     if (authenticated()) {
-      void api.clearDraft().catch(() => undefined);
+      void refreshWipDrafts();
     }
     const freshName = computeDefaultUnknownName();
     setPast([]);
@@ -740,7 +751,7 @@ function StudioInner({
     setTestResult(null);
     setTestError(null);
     onNotify('New canvas ready');
-  }, [onClearOpenedFromWorkspace, computeDefaultUnknownName, setFlow, onNotify]);
+  }, [onClearOpenedFromWorkspace, refreshWipDrafts, computeDefaultUnknownName, setFlow, onNotify]);
 
   const handleSaveDraft = useCallback(async () => {
     if (savingDraft) return;
@@ -750,10 +761,16 @@ function StudioInner({
     }
     setSavingDraft(true);
     try {
+      const targetFlowId = flow.id;
       const cleanName = flow.name.trim() || computeDefaultUnknownName();
       const saved = await saveDraftItem({ ...flow, name: cleanName }, cleanName);
       lastSyncedDraftJsonRef.current = null;
       onClearOpenedFromWorkspace?.();
+      pausedTestContextRef.current = null;
+      setPausedTestThreadId(null);
+      setMissingConnectors([]);
+      setMissingInputs([]);
+      setWipDrafts((prev) => prev.filter((d) => d.id !== targetFlowId && d.id !== saved.id));
       const nextFreshName = nextUnknownWorkflowName([
         ...drafts.map((d) => d.title),
         saved.title,
@@ -767,7 +784,7 @@ function StudioInner({
       setFlow(create(nextFreshName));
       onNotify(`Saved "${saved.title}" to Workspace`);
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Could not save draft');
+      onNotify(err instanceof Error ? err.message : 'Could not save workflow');
     } finally {
       setSavingDraft(false);
     }
@@ -783,6 +800,48 @@ function StudioInner({
     setFlow,
     onNotify,
   ]);
+
+  const handleSelectWipDraft = useCallback(
+    (wip: Flow) => {
+      manualDragRef.current = false;
+      lastAutoLayoutKeyRef.current = '';
+      lastSyncedDraftJsonRef.current = JSON.stringify(wip);
+      onClearOpenedFromWorkspace?.();
+      pausedTestContextRef.current = null;
+      setPausedTestThreadId(null);
+      setMissingConnectors([]);
+      setMissingInputs([]);
+      setPast([]);
+      setFuture([]);
+      setSelectedId(null);
+      setPendingInsertion(null);
+      setTestResult(null);
+      setTestError(null);
+      setFlow(wip);
+      setMode('canvas');
+      window.setTimeout(() => {
+        fitStudioCanvas(220);
+      }, 50);
+    },
+    [onClearOpenedFromWorkspace, setFlow, setMode, fitStudioCanvas],
+  );
+
+  const handleDiscardWipDraft = useCallback(
+    (id: string) => {
+      setWipDrafts((prev) => prev.filter((d) => d.id !== id));
+      if (authenticated()) {
+        void api.deleteDraft(id).catch(() => undefined);
+      }
+      if (flow.id === id) {
+        lastSyncedDraftJsonRef.current = null;
+        pausedTestContextRef.current = null;
+        setPausedTestThreadId(null);
+        const freshName = computeDefaultUnknownName();
+        setFlow(create(freshName));
+      }
+    },
+    [flow.id, computeDefaultUnknownName, setFlow],
+  );
 
   const handleBannerUpload = useCallback(
     async (file: File) => {
@@ -810,16 +869,25 @@ function StudioInner({
     }
     setGeneratingBanner(true);
     try {
+      const session = await getRunSession();
+      if (!session) {
+        openAuthModal();
+        onNotify('Approve a session limit in Account to generate a banner ($0.03).');
+        return;
+      }
       const logos = buildBannerBrandLogos(flow.nodes);
 
-      const generated = await api.generateBanner({
-        title: flow.name.trim() || 'man0 Workflow',
-        description:
-          flow.brief?.trim() ||
-          flow.nodes.map((n) => n.data.label).join(', ') ||
-          'Autonomous multi-step AI and Web3 workflow.',
-        ...(logos.length > 0 ? { logos } : {}),
-      });
+      const generated = await api.generateBanner(
+        {
+          title: flow.name.trim() || 'man0 Workflow',
+          description:
+            flow.brief?.trim() ||
+            flow.nodes.map((n) => n.data.label).join(', ') ||
+            'Autonomous multi-step AI and Web3 workflow.',
+          ...(logos.length > 0 ? { logos } : {}),
+        },
+        session,
+      );
       commitFlow((curr) => ({
         ...curr,
         banner: generated.imageUrl,
@@ -830,8 +898,19 @@ function StudioInner({
       onNotify(err instanceof Error ? err.message : 'Unable to generate banner');
     } finally {
       setGeneratingBanner(false);
+      void refreshSession();
     }
-  }, [user, openAuthModal, flow.name, flow.brief, flow.nodes, commitFlow, onNotify]);
+  }, [
+    user,
+    openAuthModal,
+    getRunSession,
+    refreshSession,
+    flow.name,
+    flow.brief,
+    flow.nodes,
+    commitFlow,
+    onNotify,
+  ]);
 
   const openTestRunPanel = useCallback(() => {
     if (mode !== 'canvas') setMode('canvas');
@@ -848,6 +927,7 @@ function StudioInner({
         prompt?: string;
         attachments?: WorkflowAttachment[];
         threadId?: string;
+        skipClarify?: boolean;
         connectorDecisions?: ConnectorDecisionItem[];
       },
     ) => {
@@ -877,6 +957,7 @@ function StudioInner({
       setMissingInputs([]);
       setInputPromptOpen(false);
       if (!resumeThreadId) {
+        pausedTestContextRef.current = null;
         setPausedTestThreadId(null);
         setTestResult(null);
         setTestLiveTitle(null);
@@ -884,6 +965,15 @@ function StudioInner({
         setTestLiveBillWei('0');
         setTestActiveTab('final');
       }
+      const recordPausedThread = (tid?: string) => {
+        if (!tid) return;
+        pausedTestContextRef.current = {
+          flowId: flow.id,
+          graphSig: testGraphSignature,
+          input: effectiveInput,
+        };
+        setPausedTestThreadId(tid);
+      };
       const firstPendingId = resumeThreadId
         ? (flow.nodes.find((n) => !n.data.output)?.id ?? flow.nodes[0]?.id ?? null)
         : (flow.nodes[0]?.id ?? null);
@@ -905,6 +995,9 @@ function StudioInner({
           session,
           {
             dry: dryTest,
+            ...(overrides?.skipClarify !== undefined
+              ? { skipClarify: overrides.skipClarify }
+              : {}),
             ...(effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
             ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
             ...(activeCoordinator ? { coordinator: activeCoordinator } : {}),
@@ -932,21 +1025,18 @@ function StudioInner({
                 setTestLiveBillWei(evt.composeBillWei);
               } else if (evt.type === 'connector:pause') {
                 setMissingConnectors(evt.missing);
-                if (evt.missing[0]?.threadId) {
-                  setPausedTestThreadId(evt.missing[0].threadId);
-                }
+                recordPausedThread(evt.missing[0]?.threadId);
                 setCredentialsModalOpen(true);
               } else if (evt.type === 'input:pause') {
                 setMissingInputs(evt.missingInputs);
-                if (evt.missingInputs[0]?.threadId) {
-                  setPausedTestThreadId(evt.missingInputs[0].threadId);
-                }
+                recordPausedThread(evt.missingInputs[0]?.threadId);
                 setInputPromptOpen(true);
               }
             },
           },
         );
         setTestResult(result);
+        pausedTestContextRef.current = null;
         setPausedTestThreadId(null);
 
         const stepOutputs = new Map(result.steps.map((s) => [s.id, s.output]));
@@ -961,9 +1051,7 @@ function StudioInner({
       } catch (err) {
         if (err instanceof Fault && err.code === 'CONNECTOR_REQUIRED' && err.missing?.length) {
           setMissingConnectors(err.missing);
-          if (err.missing[0]?.threadId) {
-            setPausedTestThreadId(err.missing[0].threadId);
-          }
+          recordPausedThread(err.missing[0]?.threadId);
           setCredentialsModalOpen(true);
           setTestError(err.message);
         } else if (
@@ -972,9 +1060,7 @@ function StudioInner({
           err.missingInputs?.length
         ) {
           setMissingInputs(err.missingInputs);
-          if (err.missingInputs[0]?.threadId) {
-            setPausedTestThreadId(err.missingInputs[0].threadId);
-          }
+          recordPausedThread(err.missingInputs[0]?.threadId);
           setInputPromptOpen(true);
           setTestError(err.message);
         } else {
@@ -988,6 +1074,7 @@ function StudioInner({
     },
     [
       flow,
+      testGraphSignature,
       user,
       openAuthModal,
       getRunSession,
@@ -1134,11 +1221,14 @@ function StudioInner({
           user?.consented &&
           user.userAddress &&
           authenticated() &&
-          !(openedFromWorkspaceId && openedFromWorkspaceId === targetFlow.id) &&
           hasWipContent(targetFlow)
         ) {
           const serialized = JSON.stringify(targetFlow);
           lastSyncedDraftJsonRef.current = serialized;
+          setWipDrafts((prev) => [
+            targetFlow,
+            ...prev.filter((d) => d.id !== targetFlow.id),
+          ].slice(0, 8));
           void api.draft(targetFlow).catch(() => {
             lastSyncedDraftJsonRef.current = null;
           });
@@ -1146,10 +1236,44 @@ function StudioInner({
       };
 
       try {
+        const session = await getRunSession();
+        if (!session) {
+          openAuthModal();
+          setVibeError('Approve a session limit in Account to run Vibe ($0.02).');
+          return;
+        }
+
+        if (
+          user?.consented &&
+          user.userAddress &&
+          authenticated() &&
+          !(openedFromWorkspaceId && openedFromWorkspaceId === snapshotBefore.id) &&
+          hasWipContent(snapshotBefore)
+        ) {
+          setWipDrafts((prev) => [
+            snapshotBefore,
+            ...prev.filter((d) => d.id !== snapshotBefore.id),
+          ].slice(0, 8));
+          void api.draft(snapshotBefore).catch(() => undefined);
+        }
+
+        const freshFlow = create(computeDefaultUnknownName());
+        onClearOpenedFromWorkspace?.();
+        pausedTestContextRef.current = null;
+        setPausedTestThreadId(null);
+        setMissingConnectors([]);
+        setMissingInputs([]);
+        setTestResult(null);
+        setTestError(null);
+        lastSyncedDraftJsonRef.current = null;
+        setFlow(freshFlow);
+
         const done = await api.streamVibe({
           prompt: cleanPrompt,
-          flow,
-          history: vibeHistory,
+          flow: freshFlow,
+          mode: 'create',
+          history: [],
+          composeSession: session,
           signal: controller.signal,
           onEvent: (evt) => {
             if (evt.type === 'status') {
@@ -1164,6 +1288,7 @@ function StudioInner({
               }
               setFlow((curr) => applyVibePatchToFlow(curr, evt.patch));
             } else if (evt.type === 'workflow_ready') {
+              void refreshSession();
               workflowReadyHandled = true;
               manualDragRef.current = false;
               lastAutoLayoutKeyRef.current = '';
@@ -1180,11 +1305,7 @@ function StudioInner({
                 persistReadyDraft(arranged);
                 return arranged;
               });
-              setVibeHistory((prev) => [
-                ...prev.slice(-16),
-                { role: 'user', content: cleanPrompt },
-                ...(evt.text ? [{ role: 'assistant' as const, content: evt.text }] : []),
-              ]);
+              setVibePrompt('');
               setVibeBusy(false);
               setVibeStatus(null);
               setMode('canvas');
@@ -1209,11 +1330,7 @@ function StudioInner({
               bottomReserve: 96,
             });
             setFlow(arrangedDone);
-            setVibeHistory((prev) => [
-              ...prev.slice(-16),
-              { role: 'user', content: cleanPrompt },
-              ...(done.text ? [{ role: 'assistant' as const, content: done.text }] : []),
-            ]);
+            setVibePrompt('');
             persistReadyDraft(arrangedDone);
             setMode('canvas');
             setSelectedId(null);
@@ -1246,15 +1363,19 @@ function StudioInner({
         setVibeBusy(false);
         setVibeStatus(null);
         setGeneratingBanner(false);
+        void refreshSession();
       }
     },
     [
       vibeBusy,
       user,
       openAuthModal,
+      getRunSession,
+      refreshSession,
       flow,
-      vibeHistory,
       openedFromWorkspaceId,
+      onClearOpenedFromWorkspace,
+      computeDefaultUnknownName,
       setFlow,
       setMode,
       planeSize.width,
@@ -1476,20 +1597,72 @@ function StudioInner({
     </div>
   );
 
+  const wipSquaresNode = useMemo(() => {
+    const visible = wipDrafts.filter((item) => hasWipContent(item));
+    if (visible.length === 0) return null;
+    return (
+      <div className="wip-strip">
+        <span className="wip-strip-label">Unsaved drafts</span>
+        <div className="wip-grid">
+          {visible.map((wip) => {
+            const trimmedName = wip.name.trim();
+            const isDefaultUnknown = /^unknown(?:\s*#\d+)?$/i.test(trimmedName);
+            const displayTitle =
+              (!isDefaultUnknown && trimmedName) ||
+              wip.brief?.trim() ||
+              wip.nodes.map((n) => n.data.label).join(' → ') ||
+              trimmedName ||
+              'Untitled draft';
+            const ageLabel = formatWipRelativeAge(wip.modified);
+            return (
+              <article key={wip.id} className="wip-square stealth-glass">
+                <div className="wip-square-top">
+                  <div className="wip-square-dots" aria-hidden="true">
+                    {wip.nodes.length > 0 ? (
+                      wip.nodes.slice(0, 6).map((n) => (
+                        <span key={n.id} className={`dot-${n.data.kind}`} />
+                      ))
+                    ) : (
+                      <span className="dot-model" />
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="wip-square-discard"
+                    aria-label={`Discard unsaved draft ${displayTitle}`}
+                    onClick={() => handleDiscardWipDraft(wip.id)}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </div>
+                <h3 className="wip-square-title">
+                  <button
+                    type="button"
+                    className="wip-square-select"
+                    onClick={() => handleSelectWipDraft(wip)}
+                  >
+                    {displayTitle}
+                  </button>
+                </h3>
+                <span className="wip-square-meta">
+                  {wip.nodes.length} {wip.nodes.length === 1 ? 'step' : 'steps'} · {ageLabel}
+                </span>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }, [wipDrafts, handleDiscardWipDraft, handleSelectWipDraft]);
+
   return (
     <div className="studio-container">
       {mode === 'vibe' ? (
         <div className="vibe-wrapper">
           {hudNode}
           <Vibe
-            brief={flow.brief ?? ''}
-            onChangeBrief={(nextBrief) =>
-              setFlow((curr) => ({
-                ...curr,
-                brief: nextBrief,
-                modified: new Date().toISOString(),
-              }))
-            }
+            value={vibePrompt}
+            onChange={setVibePrompt}
             onGenerate={(prompt) => void handleGenerateFromVibe(prompt)}
             stepCount={flow.nodes.length}
             onSwitchToCanvas={() => setMode('canvas')}
@@ -1498,6 +1671,7 @@ function StudioInner({
             streamPreview={vibePreview}
             errorText={vibeError}
             onCancel={handleCancelVibe}
+            wipSlot={wipSquaresNode}
           />
         </div>
       ) : (
@@ -1587,6 +1761,7 @@ function StudioInner({
                     <span>Agent</span>
                   </button>
                 </div>
+                {wipSquaresNode}
               </div>
             ) : null}
 
@@ -1763,8 +1938,8 @@ function StudioInner({
                   entries={entries}
                   disabled={testing}
                   onNotify={onNotify}
-                  onChange={(nextCoord) => {
-                    setTestCoordinator(nextCoord);
+                  onChange={(nextCoordinator) => {
+                    setTestCoordinator(nextCoordinator);
                     setPausedTestThreadId(null);
                   }}
                 />
@@ -2033,8 +2208,8 @@ function StudioInner({
                   value={flow.coordinator ?? null}
                   entries={entries}
                   onNotify={onNotify}
-                  onChange={(nextCoord) =>
-                    commitFlow((curr) => setCoordinator(curr, nextCoord))
+                  onChange={(nextCoordinator) =>
+                    commitFlow((curr) => setCoordinator(curr, nextCoordinator))
                   }
                 />
 
@@ -2117,7 +2292,7 @@ function StudioInner({
         initialAttachments={testAttachments}
         busy={testing}
         onClose={() => setInputPromptOpen(false)}
-        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments }) => {
+        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments, skipClarify }) => {
           const resumeId =
             pausedTestThreadId ?? missingInputs[0]?.threadId ?? undefined;
           setTestInput(nextPrompt);
@@ -2127,6 +2302,7 @@ function StudioInner({
           void executeTestRun(undefined, {
             prompt: nextPrompt,
             attachments: nextAttachments,
+            ...(skipClarify !== undefined ? { skipClarify } : {}),
             ...(resumeId ? { threadId: resumeId } : {}),
           });
         }}
