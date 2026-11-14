@@ -751,43 +751,80 @@ function parseHexQuantity(raw: unknown): bigint | null {
   }
 }
 
-async function sendEvmOriginTransfer(input: {
+export async function sendEvmOriginTransfer(input: {
   leg: IntentLeg;
   depositAddress: string;
+  preferredRdns?: string;
 }): Promise<{ txHash: string; sender: string }> {
-  const { provider: eth, sender } = await requestEvmAccounts(input.leg.originWalletAddress);
+  const targetLower = input.leg.originWalletAddress.trim().toLowerCase();
+  const resolved = await requestEvmAccounts(input.leg.originWalletAddress, {
+    preferredRdns: input.preferredRdns,
+  });
+  const eth = resolved.provider;
+  let sender = resolved.sender;
 
   if (input.leg.hexChainId) {
-    await switchOrAddEvmChain(eth, input.leg.hexChainId);
+    await switchOrAddEvmChain(eth, input.leg.hexChainId, {
+      rdns: resolved.rdns,
+      walletName: resolved.walletName,
+      chainLabel: input.leg.originChainLabel,
+    });
+
+    // CAIP-25 multichain wallets (MetaMask v12.6+, Phantom EVM, Rabby, Coinbase) scope account
+    // authorization per chain; re-verify eth_requestAccounts on the active chain after switching.
+    let postSwitchAccounts = (await eth
+      .request({ method: 'eth_requestAccounts' })
+      .catch(() => null)) as string[] | null;
+    if (Array.isArray(postSwitchAccounts) && postSwitchAccounts.length > 0) {
+      let matched = targetLower
+        ? postSwitchAccounts.find((a) => a.toLowerCase() === targetLower)
+        : postSwitchAccounts[0];
+      if (targetLower && !matched) {
+        const refreshed = await promptAccountPermissions(eth, true);
+        postSwitchAccounts = refreshed;
+        matched = refreshed.find((a) => a.toLowerCase() === targetLower);
+      }
+      if (targetLower && !matched) {
+        const active = postSwitchAccounts[0] ?? sender;
+        throw new Error(
+          `Authorize and select ${shortAddr(input.leg.originWalletAddress)} in ${resolved.walletName} (currently active: ${shortAddr(active)}) and try again.`,
+        );
+      }
+      if (matched) {
+        sender = matched;
+      }
+    }
   }
 
   const amountBig = BigInt(input.leg.amountAtomic);
   const tokenContract = input.leg.originToken.contractAddress?.trim();
   const isErc20 = Boolean(tokenContract && /^0x[a-fA-F0-9]{40}$/.test(tokenContract));
 
-  let baseTxParams: Record<string, string>;
-  if (isErc20 && tokenContract) {
-    const cleanRecipient = input.depositAddress.replace(/^0x/i, '').toLowerCase();
-    if (!/^[a-f0-9]{40}$/.test(cleanRecipient)) {
-      throw new Error('Deposit address format does not match EVM.');
+  const buildBaseTxParams = (fromAddress: string): Record<string, string> => {
+    if (isErc20 && tokenContract) {
+      const cleanRecipient = input.depositAddress.replace(/^0x/i, '').toLowerCase();
+      if (!/^[a-f0-9]{40}$/.test(cleanRecipient)) {
+        throw new Error('Deposit address format does not match EVM.');
+      }
+      const data =
+        '0xa9059cbb' +
+        cleanRecipient.padStart(64, '0') +
+        amountBig.toString(16).padStart(64, '0');
+      return {
+        from: fromAddress,
+        to: tokenContract,
+        value: '0x0',
+        data,
+      };
     }
-    const data =
-      '0xa9059cbb' +
-      cleanRecipient.padStart(64, '0') +
-      amountBig.toString(16).padStart(64, '0');
-    baseTxParams = {
-      from: sender,
-      to: tokenContract,
-      value: '0x0',
-      data,
-    };
-  } else {
-    baseTxParams = {
-      from: sender,
+    return {
+      from: fromAddress,
       to: input.depositAddress,
       value: `0x${amountBig.toString(16)}`,
     };
-  }
+  };
+
+  let baseTxParams = buildBaseTxParams(sender);
 
   const [latestBlock, gasPriceHex, priorityFeeHex, estimatedGasHex, walletBalHex] =
     await Promise.all([
@@ -838,29 +875,71 @@ async function sendEvmOriginTransfer(input: {
     }
   }
 
-  let txHash: string;
-  if (Object.keys(feeOverrides).length > 0) {
-    try {
-      txHash = (await eth.request({
-        method: 'eth_sendTransaction',
-        params: [{ ...baseTxParams, ...feeOverrides }],
-      })) as string;
-    } catch (err) {
-      const code = (err as { code?: number })?.code;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (code === 4001 || /user rejected|user denied|canceled/i.test(msg)) {
-        throw err;
-      }
-      txHash = (await eth.request({
-        method: 'eth_sendTransaction',
-        params: [baseTxParams],
-      })) as string;
-    }
-  } else {
-    txHash = (await eth.request({
+  const sendTxOnce = async (withFeeOverrides: boolean): Promise<string> => {
+    const txPayload =
+      withFeeOverrides && Object.keys(feeOverrides).length > 0
+        ? { ...baseTxParams, ...feeOverrides }
+        : baseTxParams;
+    return (await eth.request({
       method: 'eth_sendTransaction',
-      params: [baseTxParams],
+      params: [txPayload],
     })) as string;
+  };
+
+  const hasOverrides = Object.keys(feeOverrides).length > 0;
+  let txHash: string;
+
+  try {
+    txHash = await sendTxOnce(hasOverrides);
+  } catch (err) {
+    if (isUserRejectedError(err) || isPendingWalletRequestError(err)) {
+      throw err;
+    }
+
+    if (isUnauthorized4100Error(err)) {
+      // Explicit EIP-1193 4100 recovery: request account permissions once and verify active account.
+      const refreshed = await promptAccountPermissions(eth, true).catch((permErr) => {
+        if (isUserRejectedError(permErr)) throw permErr;
+        return [] as string[];
+      });
+      const matched = targetLower
+        ? refreshed.find((a) => a.toLowerCase() === targetLower)
+        : refreshed[0];
+
+      if (!matched) {
+        const activeHint = refreshed[0] ? ` (currently active: ${shortAddr(refreshed[0])})` : '';
+        throw new Error(
+          `Authorize and select ${shortAddr(input.leg.originWalletAddress)} in ${resolved.walletName}${activeHint} and try again.`,
+        );
+      }
+
+      sender = matched;
+      baseTxParams = buildBaseTxParams(sender);
+
+      try {
+        txHash = await sendTxOnce(hasOverrides);
+      } catch (retryErr) {
+        if (isUnauthorized4100Error(retryErr)) {
+          if (resolved.rdns.toLowerCase() === 'app.phantom') {
+            const label = input.leg.originChainLabel || input.leg.hexChainId || 'this network';
+            throw new Error(
+              `Phantom EVM blocked signing on ${label}. Enable Settings → Developer Settings → Testnet Mode in Phantom, or switch ${shortAddr(sender)} to MetaMask / Rabby.`,
+            );
+          }
+          if (refreshed[0] && targetLower && refreshed[0].toLowerCase() !== targetLower) {
+            throw new Error(
+              `Switch the active account in ${resolved.walletName} from ${shortAddr(refreshed[0])} to ${shortAddr(input.leg.originWalletAddress)} and try again.`,
+            );
+          }
+        }
+        throw retryErr;
+      }
+    } else if (hasOverrides && !/insufficient funds/i.test(extractWalletErrorMessage(err, ''))) {
+      // Only fall back to wallet-estimated gas when fee override parameters were rejected
+      txHash = await sendTxOnce(false);
+    } else {
+      throw err;
+    }
   }
 
   await api
