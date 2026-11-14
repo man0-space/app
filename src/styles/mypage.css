@@ -1,0 +1,201 @@
+/* MYPAGE: WORKSPACE FINDER (CARDS / LIST / COLUMNS) & AG EARNINGS DASHBOARD */
+
+.mypage-container {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md) var(--space-lg);
+  gap: var(--space-md);
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+.mypage-profile-bar {
+  flex-shrink: 0;
+}
+
+.mypage-stage {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  overflow: hidden;
+}
+
+.mypage-content {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================================================
+   FINDER LIST VIEW (.finder-table)
+   ========================================================================== */
+.finder-table {
+  flex: 1 1 0;
+  min-height: 0;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.finder-head {
+  display: grid;
+  grid-template-columns: minmax(12rem, 2.2fr) minmax(5rem, 0.9fr) minmax(4rem, 0.7fr) minmax(4.5rem, 0.8fr) minmax(5.5rem, 0.9fr) minmax(7rem, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 9px var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+  font-family: var(--font-mono);
+  font-size: var(--font-2xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.finder-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.finder-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 2.2fr) minmax(5rem, 0.9fr) minmax(4rem, 0.7fr) minmax(4.5rem, 0.8fr) minmax(5.5rem, 0.9fr) minmax(7rem, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 10px var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.finder-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.finder-cell-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.finder-cell {
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finder-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+/* ==========================================================================
+   FINDER MILLER COLUMNS VIEW (.finder-columns)
+   ========================================================================== */
+.finder-columns {
+  flex: 1 1 0;
+  min-height: 0;
+  border-radius: var(--radius-md);
+  display: grid;
+  grid-template-columns: clamp(9.5rem, 15vw, 13rem) minmax(14rem, 1fr) clamp(15rem, 24vw, 21rem);
+  overflow: hidden;
+}
+
+.finder-col-folders {
+  border-right: 1px solid var(--border-hairline);
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.finder-folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.finder-folder-item:hover,
+.finder-folder-item.is-active {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--text-primary);
+}
+
+.finder-col-list {
+  border-right: 1px solid var(--border-hairline);
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.finder-col-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.finder-col-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  text-align: left;
+  font-size: var(--font-xs);
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.finder-col-row:hover,
+.finder-col-row.is-active {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.finder-col-inspector {
+  padding: var(--space-md);
+  min-width: 0;
+}
+
+.finder-mobile-inspector {
+  display: none;
+  padding: var(--space-xs) var(--space-sm) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-hairline);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.inspector-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
