@@ -13,25 +13,35 @@ export interface EvmProvider {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
 }
 
-interface DiscoveredEvmProvider {
+export interface DiscoveredEvmProvider {
   rdns: string;
+  name: string;
   provider: EvmProvider;
 }
 
 const eip6963Providers = new Map<string, DiscoveredEvmProvider>();
 let eip6963Listening = false;
 
+export function resetEip6963ProvidersForTesting(): void {
+  eip6963Providers.clear();
+  eip6963Listening = false;
+}
+
 function ensureEip6963Listener(): void {
   if (typeof window === 'undefined' || eip6963Listening) return;
   eip6963Listening = true;
   window.addEventListener('eip6963:announceProvider', (event: Event) => {
     const detail = (
-      event as CustomEvent<{ info?: { uuid?: string; rdns?: string }; provider?: EvmProvider }>
+      event as CustomEvent<{
+        info?: { uuid?: string; rdns?: string; name?: string };
+        provider?: EvmProvider;
+      }>
     ).detail;
     if (!detail?.provider) return;
     const key = detail.info?.rdns || detail.info?.uuid || `provider-${eip6963Providers.size}`;
     eip6963Providers.set(key, {
       rdns: detail.info?.rdns ?? '',
+      name: detail.info?.name ?? '',
       provider: detail.provider,
     });
   });
@@ -56,11 +66,69 @@ const DEDICATED_EVM_RDNS = new Set([
 
 const DEMOTED_EVM_RDNS = new Set(['app.meteorwallet', 'app.phantom']);
 
+const RDNS_FRIENDLY_NAMES: Record<string, string> = {
+  'io.metamask': 'MetaMask',
+  'io.metamask.flask': 'MetaMask Flask',
+  'io.rabby': 'Rabby',
+  'com.coinbase.wallet': 'Coinbase Wallet',
+  'com.brave.wallet': 'Brave Wallet',
+  'me.rainbow': 'Rainbow',
+  'io.zerion.wallet': 'Zerion',
+  'com.trustwallet.app': 'Trust Wallet',
+  'com.okex.wallet': 'OKX Wallet',
+  'app.phantom': 'Phantom',
+  'app.meteorwallet': 'Meteor Wallet',
+};
+
+export function friendlyWalletName(rdns?: string, explicitName?: string): string {
+  if (explicitName?.trim()) return explicitName.trim();
+  const clean = (rdns ?? '').trim().toLowerCase();
+  if (clean && RDNS_FRIENDLY_NAMES[clean]) return RDNS_FRIENDLY_NAMES[clean]!;
+  return 'your browser wallet';
+}
+
 function evmProviderRank(rdns: string): number {
   const clean = rdns.trim().toLowerCase();
   if (DEDICATED_EVM_RDNS.has(clean)) return 0;
   if (DEMOTED_EVM_RDNS.has(clean)) return 2;
   return 1;
+}
+
+function getWalletErrorCode(err: unknown): number | string | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const rec = err as {
+    code?: number | string;
+    data?: { originalError?: { code?: number | string } };
+    cause?: { code?: number | string };
+  };
+  return rec.code ?? rec.data?.originalError?.code ?? rec.cause?.code;
+}
+
+function isUserRejectedError(err: unknown): boolean {
+  const code = getWalletErrorCode(err);
+  if (code === 4001 || code === 'ACTION_REJECTED') return true;
+  const msg = extractWalletErrorMessage(err, '');
+  return /user rejected|user denied|rejected the request|canceled/i.test(msg);
+}
+
+function isUnauthorized4100Error(err: unknown): boolean {
+  const code = getWalletErrorCode(err);
+  if (code === 4100) return true;
+  const msg = extractWalletErrorMessage(err, '');
+  return /not been authorized|unauthorized.*account|4100/i.test(msg);
+}
+
+function isPendingWalletRequestError(err: unknown): boolean {
+  const code = getWalletErrorCode(err);
+  if (code === -32002) return true;
+  const msg = extractWalletErrorMessage(err, '');
+  return /already pending|-32002/i.test(msg);
+}
+
+function shortAddr(addr: string, head = 6, tail = 4): string {
+  const clean = addr.trim();
+  if (clean.length <= head + tail + 2) return clean;
+  return `${clean.slice(0, head)}…${clean.slice(-tail)}`;
 }
 
 export function extractWalletErrorMessage(err: unknown, fallback: string): string {
@@ -116,13 +184,13 @@ export async function discoverEvmProviders(): Promise<DiscoveredEvmProvider[]> {
       for (const p of winEth.providers) {
         if (p && !seen.has(p)) {
           seen.add(p);
-          found.push({ rdns: '', provider: p });
+          found.push({ rdns: '', name: '', provider: p });
         }
       }
     }
     if (winEth && !seen.has(winEth)) {
       seen.add(winEth);
-      found.push({ rdns: '', provider: winEth });
+      found.push({ rdns: '', name: '', provider: winEth });
     }
   }
 
