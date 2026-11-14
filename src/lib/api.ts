@@ -815,7 +815,12 @@ export const api = {
       window.addEventListener('message', onMessage);
     });
   },
-  link: (value: { network: 'evm' | 'svm'; address: string }) =>
+  link: (value: {
+    network: 'evm' | 'svm';
+    address: string;
+    providerRdns?: string;
+    providerName?: string;
+  }) =>
     request<{
       id: string;
       userAddress: string;
@@ -824,9 +829,15 @@ export const api = {
       publicKey: string;
       status: 'pending' | 'active' | 'failed';
       transaction: string | null;
+      providerRdns?: string;
+      providerName?: string;
     }>('/auth/link', {
       method: 'POST',
       body: body(value),
+    }),
+  unlink: (id: string) =>
+    request<{ removed: boolean; id: string }>(`/auth/link/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
   links: () =>
     request<
@@ -838,6 +849,8 @@ export const api = {
         publicKey: string;
         status: 'pending' | 'active' | 'failed';
         transaction: string | null;
+        providerRdns?: string;
+        providerName?: string;
       }[]
     >('/auth/links'),
   nearBalance: () => request<Balance>('/near/balance'),
