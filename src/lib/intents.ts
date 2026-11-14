@@ -255,73 +255,246 @@ function bytesToBase64(bytes: Uint8Array): string {
   return window.btoa(bin);
 }
 
+export interface RequestEvmOptions {
+  preferredRdns?: string;
+  forceAccountPicker?: boolean;
+  excludeAddresses?: string[];
+}
+
+export interface ResolvedEvmAccount {
+  provider: EvmProvider;
+  sender: string;
+  allAccounts: string[];
+  rdns: string;
+  walletName: string;
+}
+
+function extractAccountsFromPermissions(perms: unknown): string[] {
+  if (!Array.isArray(perms)) return [];
+  const out: string[] = [];
+  for (const item of perms) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as {
+      parentCapability?: unknown;
+      caveats?: Array<{ type?: unknown; value?: unknown }>;
+    };
+    if (rec.parentCapability !== 'eth_accounts' || !Array.isArray(rec.caveats)) continue;
+    for (const caveat of rec.caveats) {
+      if (Array.isArray(caveat?.value)) {
+        for (const addr of caveat.value) {
+          if (typeof addr === 'string' && addr.trim()) {
+            out.push(addr.trim());
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+async function promptAccountPermissions(
+  provider: EvmProvider,
+  needAccountPicker: boolean,
+): Promise<string[]> {
+  let permAccounts: string[] = [];
+  if (needAccountPicker) {
+    try {
+      const perms = await provider.request({
+        method: 'wallet_requestPermissions',
+        params: [{ eth_accounts: {} }],
+      });
+      permAccounts = extractAccountsFromPermissions(perms);
+    } catch (err) {
+      if (isUserRejectedError(err) || isPendingWalletRequestError(err)) {
+        throw err;
+      }
+      // Wallet may not implement EIP-2255 wallet_requestPermissions (-32601); fall through to eth_requestAccounts
+    }
+  }
+  const requested = (await provider.request({ method: 'eth_requestAccounts' }).catch((err) => {
+    if (permAccounts.length > 0 && !isUserRejectedError(err)) {
+      return permAccounts;
+    }
+    throw err;
+  })) as string[] | null;
+
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const list of [Array.isArray(requested) ? requested : [], permAccounts]) {
+    for (const addr of list) {
+      if (typeof addr !== 'string' || !addr.trim()) continue;
+      const lower = addr.trim().toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        merged.push(addr.trim());
+      }
+    }
+  }
+  return merged;
+}
+
 export async function requestEvmAccounts(
   preferredAddress?: string,
-): Promise<{ provider: EvmProvider; sender: string }> {
-  const candidates = await discoverEvmProviders();
-  if (candidates.length === 0) {
+  options?: RequestEvmOptions,
+): Promise<ResolvedEvmAccount> {
+  const discovered = await discoverEvmProviders();
+  if (discovered.length === 0) {
     throw new Error('No EVM browser wallet detected.');
   }
 
   const targetLower = preferredAddress?.trim().toLowerCase() || '';
-  let fallbackAuthorized: { provider: EvmProvider; sender: string } | null = null;
+  const preferredRdnsLower = options?.preferredRdns?.trim().toLowerCase() || '';
+  const excludedSet = new Set(
+    (options?.excludeAddresses ?? []).map((a) => a.trim().toLowerCase()).filter(Boolean),
+  );
 
-  for (const { provider } of candidates) {
+  // Order providers: explicit preferredRdns first, then standard rank
+  const candidates = [...discovered].sort((a, b) => {
+    const aPref = preferredRdnsLower && a.rdns.trim().toLowerCase() === preferredRdnsLower ? -1 : 0;
+    const bPref = preferredRdnsLower && b.rdns.trim().toLowerCase() === preferredRdnsLower ? -1 : 0;
+    if (aPref !== bPref) return aPref - bPref;
+    return evmProviderRank(a.rdns) - evmProviderRank(b.rdns);
+  });
+
+  const passiveAccountsByCandidate = new Map<DiscoveredEvmProvider, string[]>();
+  let exactActiveMatch: ResolvedEvmAccount | null = null;
+  let exactPermittedMatch: ResolvedEvmAccount | null = null;
+  let fallbackAuthorized: ResolvedEvmAccount | null = null;
+
+  for (const cand of candidates) {
     try {
       const accounts = (await Promise.race([
-        provider.request({ method: 'eth_accounts' }),
-        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 900)),
+        cand.provider.request({ method: 'eth_accounts' }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
       ])) as string[] | null;
-      if (Array.isArray(accounts) && accounts.length > 0) {
-        const matched = targetLower
-          ? accounts.find((a) => a.toLowerCase() === targetLower)
-          : undefined;
-        if (matched) {
-          return { provider, sender: matched };
+      const cleanAccounts = Array.isArray(accounts)
+        ? accounts.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+        : [];
+      passiveAccountsByCandidate.set(cand, cleanAccounts);
+
+      if (cleanAccounts.length > 0) {
+        const walletName = friendlyWalletName(cand.rdns, cand.name);
+        if (targetLower) {
+          if (cleanAccounts[0]!.toLowerCase() === targetLower && !exactActiveMatch) {
+            exactActiveMatch = {
+              provider: cand.provider,
+              sender: cleanAccounts[0]!,
+              allAccounts: cleanAccounts,
+              rdns: cand.rdns,
+              walletName,
+            };
+          } else {
+            const matched = cleanAccounts.find((a) => a.toLowerCase() === targetLower);
+            if (matched && !exactPermittedMatch) {
+              exactPermittedMatch = {
+                provider: cand.provider,
+                sender: matched,
+                allAccounts: cleanAccounts,
+                rdns: cand.rdns,
+                walletName,
+              };
+            }
+          }
         }
-        if (!fallbackAuthorized) {
-          fallbackAuthorized = { provider, sender: accounts[0] };
+        if (!fallbackAuthorized && !DEMOTED_EVM_RDNS.has(cand.rdns.trim().toLowerCase())) {
+          const preferredNonExcluded =
+            cleanAccounts.find((a) => !excludedSet.has(a.toLowerCase())) ?? cleanAccounts[0]!;
+          fallbackAuthorized = {
+            provider: cand.provider,
+            sender: preferredNonExcluded,
+            allAccounts: cleanAccounts,
+            rdns: cand.rdns,
+            walletName,
+          };
         }
       }
     } catch {
-      // Ignore passive provider check failure
+      passiveAccountsByCandidate.set(cand, []);
     }
   }
 
-  if (fallbackAuthorized && !targetLower) {
+  if (targetLower && (exactActiveMatch || exactPermittedMatch)) {
+    return (exactActiveMatch ?? exactPermittedMatch)!;
+  }
+
+  if (fallbackAuthorized && !targetLower && !options?.forceAccountPicker) {
     return fallbackAuthorized;
   }
 
-  let firstPrompted: { provider: EvmProvider; sender: string } | null = null;
+  // Filter interactive prompt candidates:
+  // 1. If preferredRdns matches an installed wallet, prompt ONLY that wallet.
+  // 2. Otherwise, do NOT fall through to demoted non-dedicated EVM wallets (Phantom/Meteor)
+  //    when a dedicated/standard EVM wallet is installed.
+  const preferredMatches = preferredRdnsLower
+    ? candidates.filter((c) => c.rdns.trim().toLowerCase() === preferredRdnsLower)
+    : [];
+  const nonDemoted = candidates.filter((c) => !DEMOTED_EVM_RDNS.has(c.rdns.trim().toLowerCase()));
+  const promptCandidates =
+    preferredMatches.length > 0
+      ? preferredMatches
+      : nonDemoted.length > 0
+        ? nonDemoted
+        : candidates;
+
+  let firstPrompted: ResolvedEvmAccount | null = null;
   let lastErr: unknown = null;
-  for (const { provider } of candidates) {
+
+  for (const cand of promptCandidates) {
+    const walletName = friendlyWalletName(cand.rdns, cand.name);
+    const passiveList = passiveAccountsByCandidate.get(cand) ?? [];
+    // Must force EIP-2255 account picker whenever:
+    // - caller requested forceAccountPicker (attaching a wallet), OR
+    // - provider already has other accounts connected on this origin, so eth_requestAccounts
+    //   would silently return the old account without letting the user authorize preferredAddress!
+    const needPicker =
+      Boolean(options?.forceAccountPicker) || Boolean(targetLower && passiveList.length > 0);
     try {
-      const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as string[];
-      if (Array.isArray(accounts) && accounts.length > 0) {
-        const matched = targetLower
-          ? accounts.find((a) => a.toLowerCase() === targetLower)
-          : undefined;
-        if (matched) {
-          return { provider, sender: matched };
-        }
-        if (!targetLower) {
-          return { provider, sender: accounts[0]! };
-        }
-        if (!firstPrompted) {
-          firstPrompted = { provider, sender: accounts[0]! };
+      const accounts = await promptAccountPermissions(cand.provider, needPicker);
+      if (accounts.length > 0) {
+        if (targetLower) {
+          const matched = accounts.find((a) => a.toLowerCase() === targetLower);
+          if (matched) {
+            return {
+              provider: cand.provider,
+              sender: matched,
+              allAccounts: accounts,
+              rdns: cand.rdns,
+              walletName,
+            };
+          }
+          if (!firstPrompted) {
+            firstPrompted = {
+              provider: cand.provider,
+              sender: accounts[0]!,
+              allAccounts: accounts,
+              rdns: cand.rdns,
+              walletName,
+            };
+          }
+        } else {
+          const chosen =
+            accounts.find((a) => !excludedSet.has(a.toLowerCase())) ?? accounts[0]!;
+          return {
+            provider: cand.provider,
+            sender: chosen,
+            allAccounts: accounts,
+            rdns: cand.rdns,
+            walletName,
+          };
         }
       }
     } catch (err) {
-      const code = (err as { code?: number })?.code;
-      if (code === 4001) throw err;
+      if (isUserRejectedError(err) || isPendingWalletRequestError(err)) {
+        throw err;
+      }
       lastErr = err;
     }
   }
 
   if (targetLower && (firstPrompted || fallbackAuthorized)) {
-    const activeAddr = (firstPrompted ?? fallbackAuthorized)!.sender;
+    const active = (firstPrompted ?? fallbackAuthorized)!;
     throw new Error(
-      `Switch your EVM wallet to ${preferredAddress!.slice(0, 6)}…${preferredAddress!.slice(-4)} (currently active: ${activeAddr.slice(0, 6)}…${activeAddr.slice(-4)}) and try again.`,
+      `Authorize and select ${shortAddr(preferredAddress!)} in ${active.walletName} (currently connected: ${shortAddr(active.sender)}) and try again.`,
     );
   }
   if (firstPrompted) return firstPrompted;
