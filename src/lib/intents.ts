@@ -991,81 +991,171 @@ async function sendNearOriginTransfer(input: {
   return { txHash: executed.txHash };
 }
 
+export async function requestSvmAccount(options?: {
+  forceAccountPicker?: boolean;
+  excludeAddresses?: string[];
+}): Promise<{ address: string; walletName: string }> {
+  const excluded = new Set((options?.excludeAddresses ?? []).map((a) => a.trim()).filter(Boolean));
+  const standardWallets = getStandardSolanaWallets();
+
+  if (standardWallets.length > 0) {
+    for (const w of standardWallets) {
+      if ('standard:connect' in w.features) {
+        try {
+          if (options?.forceAccountPicker && 'standard:disconnect' in w.features) {
+            const allExcluded =
+              w.accounts.length > 0 && w.accounts.every((a) => excluded.has(a.address));
+            if (allExcluded) {
+              const disc = w.features['standard:disconnect'] as { disconnect: () => Promise<void> };
+              await disc.disconnect().catch(() => undefined);
+            }
+          }
+          const connectFeature = w.features['standard:connect'] as {
+            connect: () => Promise<{ accounts: readonly { address: string }[] }>;
+          };
+          const connected = await connectFeature.connect();
+          const list = connected.accounts.length > 0 ? connected.accounts : w.accounts;
+          const chosen = list.find((a) => !excluded.has(a.address)) ?? list[0];
+          if (chosen?.address) {
+            return { address: chosen.address, walletName: w.name || 'Solana Wallet' };
+          }
+        } catch (err) {
+          if (isUserRejectedError(err)) throw err;
+        }
+      }
+    }
+  }
+
+  const injected = getInjectedSolanaProvider() as
+    | (LegacySolanaProvider & { disconnect?: () => Promise<void>; isPhantom?: boolean })
+    | null;
+  if (!injected) {
+    throw new Error('No Solana wallet detected.');
+  }
+  if (
+    options?.forceAccountPicker &&
+    injected.publicKey &&
+    excluded.has(injected.publicKey.toString()) &&
+    typeof injected.disconnect === 'function'
+  ) {
+    await injected.disconnect().catch(() => undefined);
+  }
+  const resp = await injected.connect();
+  const address = resp?.publicKey?.toString() || injected.publicKey?.toString() || '';
+  if (!address) {
+    throw new Error('Select an account in your Solana wallet to continue.');
+  }
+  return {
+    address,
+    walletName: injected.isPhantom ? 'Phantom' : 'Solana Wallet',
+  };
+}
+
 async function sendSvmOriginTransfer(input: {
   leg: IntentLeg;
   depositAddress: string;
 }): Promise<{ txHash: string }> {
   const preferred = input.leg.originWalletAddress.trim();
-  const injected = getInjectedSolanaProvider();
+  const standardWallets = getStandardSolanaWallets();
 
-  if (injected && typeof injected.request === 'function') {
+  // Prefer a Wallet Standard wallet that already exposes the exact preferred Solana address
+  const exactStandardWallet = preferred
+    ? standardWallets.find((w) => w.accounts.some((a) => a.address === preferred))
+    : undefined;
+
+  const injected = getInjectedSolanaProvider();
+  if (!exactStandardWallet && injected && typeof injected.request === 'function') {
     const conn = await injected.connect();
-    const senderAddress =
-      conn?.publicKey?.toString() || injected.publicKey?.toString() || preferred;
+    const senderAddress = conn?.publicKey?.toString() || injected.publicKey?.toString() || '';
     if (!senderAddress) {
       throw new Error('Select an account in your Solana wallet to continue.');
     }
+    if (!preferred || senderAddress === preferred) {
+      const prep = await api.intentsSvmPrepare({
+        senderAddress: senderAddress || preferred,
+        depositAddress: input.depositAddress,
+        amountAtomic: input.leg.amountAtomic,
+        ...(input.leg.originToken.contractAddress
+          ? { tokenContract: input.leg.originToken.contractAddress }
+          : {}),
+        decimals: input.leg.originToken.decimals,
+        ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+      });
 
-    const prep = await api.intentsSvmPrepare({
-      senderAddress,
-      depositAddress: input.depositAddress,
-      amountAtomic: input.leg.amountAtomic,
-      ...(input.leg.originToken.contractAddress
-        ? { tokenContract: input.leg.originToken.contractAddress }
-        : {}),
-      decimals: input.leg.originToken.decimals,
-      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
-    });
+      const signed = (await injected.request({
+        method: 'signTransaction',
+        params: { message: prep.messageBase58 },
+      })) as { serialize?: () => Uint8Array } | Uint8Array;
 
-    const signed = (await injected.request({
-      method: 'signTransaction',
-      params: { message: prep.messageBase58 },
-    })) as { serialize?: () => Uint8Array } | Uint8Array;
+      const signedBytes =
+        signed instanceof Uint8Array
+          ? signed
+          : typeof signed?.serialize === 'function'
+            ? signed.serialize()
+            : null;
+      if (!signedBytes) {
+        throw new Error('Solana wallet did not return a signed transaction.');
+      }
 
-    const signedBytes =
-      signed instanceof Uint8Array
-        ? signed
-        : typeof signed?.serialize === 'function'
-          ? signed.serialize()
-          : null;
-    if (!signedBytes) {
-      throw new Error('Solana wallet did not return a signed transaction.');
+      const sent = await api.intentsSvmBroadcast({
+        signedTransactionBase64: bytesToBase64(signedBytes),
+        depositAddress: input.depositAddress,
+        ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
+      });
+      return { txHash: sent.txHash };
     }
-
-    const sent = await api.intentsSvmBroadcast({
-      signedTransactionBase64: bytesToBase64(signedBytes),
-      depositAddress: input.depositAddress,
-      ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
-    });
-    return { txHash: sent.txHash };
+    if (standardWallets.length === 0) {
+      throw new Error(
+        `Switch your Solana wallet to ${shortAddr(preferred, 4, 4)} (currently active: ${shortAddr(senderAddress, 4, 4)}) and try again.`,
+      );
+    }
   }
 
-  const standardWallets = getStandardSolanaWallets();
   if (standardWallets.length === 0) {
     throw new Error('No Solana browser wallet detected.');
   }
 
-  const wallet =
-    standardWallets.find((w) => w.accounts.some((a) => a.address === preferred)) ??
-    standardWallets[0]!;
+  let matchedWallet = exactStandardWallet;
+  let matchedAccount = exactStandardWallet?.accounts.find((a) => a.address === preferred);
+  let fallbackActiveAddress = '';
 
-  let accounts = wallet.accounts;
-  if (accounts.length === 0 && 'standard:connect' in wallet.features) {
-    const connectFeature = wallet.features['standard:connect'] as {
-      connect: () => Promise<{ accounts: readonly { address: string }[] }>;
-    };
-    const connected = await connectFeature.connect();
-    accounts = connected.accounts as typeof wallet.accounts;
+  if (!matchedAccount) {
+    for (const w of standardWallets) {
+      let accounts = w.accounts;
+      if (accounts.length === 0 && 'standard:connect' in w.features) {
+        try {
+          const connectFeature = w.features['standard:connect'] as {
+            connect: () => Promise<{ accounts: readonly { address: string }[] }>;
+          };
+          const connected = await connectFeature.connect();
+          accounts = connected.accounts as typeof w.accounts;
+        } catch (err) {
+          if (isUserRejectedError(err)) throw err;
+        }
+      }
+      if (!fallbackActiveAddress && accounts[0]?.address) {
+        fallbackActiveAddress = accounts[0].address;
+      }
+      const found = preferred ? accounts.find((a) => a.address === preferred) : accounts[0];
+      if (found) {
+        matchedWallet = w;
+        matchedAccount = found;
+        break;
+      }
+    }
   }
 
-  const targetAccount =
-    accounts.find((a) => a.address === preferred) ?? accounts[0];
-  if (!targetAccount) {
+  if (!matchedWallet || !matchedAccount) {
+    if (preferred && fallbackActiveAddress) {
+      throw new Error(
+        `Switch your Solana wallet to ${shortAddr(preferred, 4, 4)} (currently active: ${shortAddr(fallbackActiveAddress, 4, 4)}) and try again.`,
+      );
+    }
     throw new Error('Select an account in your Solana wallet to continue.');
   }
 
   const prep = await api.intentsSvmPrepare({
-    senderAddress: targetAccount.address,
+    senderAddress: matchedAccount.address,
     depositAddress: input.depositAddress,
     amountAtomic: input.leg.amountAtomic,
     ...(input.leg.originToken.contractAddress
@@ -1075,14 +1165,14 @@ async function sendSvmOriginTransfer(input: {
     ...(input.leg.quote.depositMemo ? { memo: input.leg.quote.depositMemo } : {}),
   });
 
-  const signFeature = wallet.features['solana:signTransaction'] as {
+  const signFeature = matchedWallet.features['solana:signTransaction'] as {
     signTransaction: (
       ...inputs: Array<{ account: unknown; transaction: Uint8Array }>
     ) => Promise<readonly { signedTransaction: Uint8Array }[]>;
   };
 
   const outputs = await signFeature.signTransaction({
-    account: targetAccount,
+    account: matchedAccount,
     transaction: base64ToBytes(prep.transactionBase64),
   });
   const signedBytes = outputs?.[0]?.signedTransaction;
