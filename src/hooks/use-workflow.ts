@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../contexts/auth';
 import { api, authenticated } from '../lib/api';
 import { nextUnknownWorkflowName } from '../lib/graph';
@@ -42,6 +42,21 @@ const USER_CACHE_PREFIX = 'man0.workflows.user.v1:';
 
 let memoryMarketCache: Listing[] | null = null;
 const memoryUserCache = new Map<string, Listing[]>();
+
+export function clearUserWorkflowCache(): void {
+  memoryUserCache.clear();
+  if (typeof localStorage === 'undefined') return;
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(USER_CACHE_PREFIX)) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
 
 function readCachedListings(key: string): Listing[] | null {
   if (typeof localStorage === 'undefined') return null;

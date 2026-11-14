@@ -22,25 +22,44 @@ export function sessionNetworkFor(network: 'mainnet' | 'testnet'): Network {
   return network === 'testnet' ? 'near:testnet' : 'near:mainnet';
 }
 
-export const compose = new ComposeSDK({
-  baseUrl: requireEnv('VITE_COMPOSE_API_URL').replace(/\/+$/, ''),
-  network: nearNetworkId(),
-});
+function createComposeInstance(network: Network = nearNetworkId()): ComposeSDK {
+  return new ComposeSDK({
+    baseUrl: requireEnv('VITE_COMPOSE_API_URL').replace(/\/+$/, ''),
+    network,
+  });
+}
 
+let composeInstance = createComposeInstance();
 let attachedUserAddress: string | null = null;
 let attachedNetwork: Network | null = null;
+
+export const compose: ComposeSDK = new Proxy({} as ComposeSDK, {
+  get(_target, prop) {
+    const val = Reflect.get(composeInstance as object, prop, composeInstance);
+    return typeof val === 'function' ? val.bind(composeInstance) : val;
+  },
+});
+
+export function resetComposeSdk(): void {
+  attachedUserAddress = null;
+  attachedNetwork = null;
+  composeInstance = createComposeInstance();
+}
 
 export function getComposeSdk(userAddress?: string, network?: Network): ComposeSDK {
   const targetNetwork = network ?? attachedNetwork ?? nearNetworkId();
   if (userAddress && (userAddress !== attachedUserAddress || targetNetwork !== attachedNetwork)) {
-    compose.wallets.attach({
+    if (attachedUserAddress && attachedUserAddress !== userAddress) {
+      composeInstance = createComposeInstance(targetNetwork);
+    }
+    composeInstance.wallets.attach({
       address: userAddress,
       network: targetNetwork,
     });
     attachedUserAddress = userAddress;
     attachedNetwork = targetNetwork;
   }
-  return compose;
+  return composeInstance;
 }
 
 export async function readSession(
