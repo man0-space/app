@@ -502,24 +502,143 @@ export async function requestEvmAccounts(
   throw new Error(extractWalletErrorMessage(lastErr, 'Select an account in your wallet to continue.'));
 }
 
-async function switchOrAddEvmChain(eth: EvmProvider, hexChainId: string): Promise<void> {
+const KNOWN_EVM_CHAINS: Record<
+  number,
+  {
+    chainName: string;
+    rpcUrls: string[];
+    nativeCurrency: { name: string; symbol: string; decimals: number };
+    blockExplorerUrls?: string[];
+  }
+> = {
+  1: {
+    chainName: 'Ethereum Mainnet',
+    rpcUrls: ['https://ethereum-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://etherscan.io'],
+  },
+  11155111: {
+    chainName: 'Ethereum Sepolia',
+    rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://sepolia.etherscan.io'],
+  },
+  42161: {
+    chainName: 'Arbitrum One',
+    rpcUrls: ['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://arbiscan.io'],
+  },
+  421614: {
+    chainName: 'Arbitrum Sepolia',
+    rpcUrls: [
+      'https://sepolia-rollup.arbitrum.io/rpc',
+      'https://arbitrum-sepolia-rpc.publicnode.com',
+    ],
+    nativeCurrency: { name: 'Arbitrum Sepolia Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://sepolia.arbiscan.io'],
+  },
+  8453: {
+    chainName: 'Base',
+    rpcUrls: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://basescan.org'],
+  },
+  84532: {
+    chainName: 'Base Sepolia',
+    rpcUrls: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Base Sepolia Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://sepolia.basescan.org'],
+  },
+  10: {
+    chainName: 'OP Mainnet',
+    rpcUrls: ['https://mainnet.optimism.io', 'https://optimism-rpc.publicnode.com'],
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://optimistic.etherscan.io'],
+  },
+  11155420: {
+    chainName: 'OP Sepolia',
+    rpcUrls: ['https://sepolia.optimism.io', 'https://optimism-sepolia-rpc.publicnode.com'],
+    nativeCurrency: { name: 'OP Sepolia Ether', symbol: 'ETH', decimals: 18 },
+    blockExplorerUrls: ['https://sepolia-optimism.etherscan.io'],
+  },
+  137: {
+    chainName: 'Polygon',
+    rpcUrls: ['https://polygon-bor-rpc.publicnode.com'],
+    nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 },
+    blockExplorerUrls: ['https://polygonscan.com'],
+  },
+};
+
+function normalizeHexChainId(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  const parsed = Number.parseInt(trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed, 16);
+  return Number.isFinite(parsed) && parsed > 0 ? `0x${parsed.toString(16)}` : trimmed;
+}
+
+async function switchOrAddEvmChain(
+  eth: EvmProvider,
+  hexChainId: string,
+  meta?: { rdns?: string; walletName?: string; chainLabel?: string },
+): Promise<void> {
+  const canonicalHex = normalizeHexChainId(hexChainId);
+  const currentChainRaw = (await eth
+    .request({ method: 'eth_chainId' })
+    .catch(() => null)) as string | null;
+  if (typeof currentChainRaw === 'string' && normalizeHexChainId(currentChainRaw) === canonicalHex) {
+    return;
+  }
+
   try {
     await eth.request({
       method: 'wallet_switchEthereumChain',
-      params: [{ chainId: hexChainId }],
+      params: [{ chainId: canonicalHex }],
     });
+    return;
   } catch (err) {
-    const errRec = err as {
-      code?: number;
-      data?: { originalError?: { code?: number } };
-      cause?: { code?: number };
-    };
-    const code = errRec?.code ?? errRec?.data?.originalError?.code ?? errRec?.cause?.code;
+    if (isUserRejectedError(err) || isPendingWalletRequestError(err)) {
+      throw err;
+    }
+    if (isUnauthorized4100Error(err)) {
+      if (meta?.rdns?.toLowerCase() === 'app.phantom') {
+        const label = meta.chainLabel || canonicalHex;
+        throw new Error(
+          `Phantom EVM rejected ${label} (${canonicalHex}). Enable Settings → Developer Settings → Testnet Mode in Phantom, or attach MetaMask / Rabby for ${label}.`,
+        );
+      }
+      // Refresh account permission once then retry chain switch
+      await promptAccountPermissions(eth, false).catch(() => []);
+      await eth.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: canonicalHex }],
+      });
+      return;
+    }
+
+    const code = getWalletErrorCode(err);
     const errMsg = extractWalletErrorMessage(err, '');
     const isMissingChain =
       code === 4902 || /unrecognized chain|unknown chain|try adding the chain|4902/i.test(errMsg);
     if (!isMissingChain) throw err;
-    const numericId = Number.parseInt(hexChainId, 16);
+
+    const numericId = Number.parseInt(canonicalHex, 16);
+    const curated = KNOWN_EVM_CHAINS[numericId];
+    if (curated) {
+      await eth.request({
+        method: 'wallet_addEthereumChain',
+        params: [
+          {
+            chainId: canonicalHex,
+            chainName: curated.chainName,
+            rpcUrls: curated.rpcUrls,
+            nativeCurrency: curated.nativeCurrency,
+            ...(curated.blockExplorerUrls ? { blockExplorerUrls: curated.blockExplorerUrls } : {}),
+          },
+        ],
+      });
+      return;
+    }
+
     const registry = (await fetch('https://chainid.network/chains.json').then((r) =>
       r.json(),
     )) as Array<{
@@ -538,7 +657,7 @@ async function switchOrAddEvmChain(eth: EvmProvider, hexChainId: string): Promis
       method: 'wallet_addEthereumChain',
       params: [
         {
-          chainId: hexChainId,
+          chainId: canonicalHex,
           chainName: entry.name,
           rpcUrls,
           nativeCurrency: entry.nativeCurrency ?? {
