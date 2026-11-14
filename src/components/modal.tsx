@@ -44,7 +44,8 @@ export function Modal({
     const previous = document.activeElement as HTMLElement | null;
     const rootEl = document.getElementById('root');
     if (rootEl) rootEl.inert = true;
-    const release = closeRef.current ? ownEscape(() => closeRef.current?.(), 20) : () => { };
+    const release =
+      closeRef.current && !hideClose ? ownEscape(() => closeRef.current?.(), 20) : () => {};
 
     const frame = requestAnimationFrame(() => {
       const dialog = dialogRef.current;
@@ -101,7 +102,7 @@ export function Modal({
         previous?.focus?.();
       }
     };
-  }, [open]);
+  }, [open, hideClose]);
 
   if (!open) return null;
 

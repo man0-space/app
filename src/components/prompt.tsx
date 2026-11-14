@@ -1,5 +1,6 @@
+import { Sparkles } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { MissingInputRequirement, WorkflowAttachment } from '../lib/api';
+import type { Clarification, MissingInputRequirement, WorkflowAttachment } from '../lib/api';
 import { RunComposer } from './composer';
 import { Modal } from './modal';
 
@@ -10,7 +11,36 @@ export interface PromptProps {
   initialAttachments: WorkflowAttachment[];
   busy?: boolean;
   onClose: () => void;
-  onSubmit: (next: { prompt: string; attachments: WorkflowAttachment[] }) => void;
+  onSubmit: (next: {
+    prompt: string;
+    attachments: WorkflowAttachment[];
+    skipClarify?: boolean;
+  }) => void;
+}
+
+function normalizePromptItems(req: MissingInputRequirement): Clarification[] {
+  if (req.items && req.items.length > 0) {
+    return req.items;
+  }
+  const questions = (req.questions ?? []).filter((q) => q.trim().length > 0);
+  if (questions.length > 0) {
+    return questions.map((question, idx) => ({
+      id: `${req.stepId}-q-${idx}`,
+      stepId: req.stepId,
+      stepTitle: req.modelName || req.stepLabel,
+      question,
+      acceptedInputs: req.acceptedInputs,
+    }));
+  }
+  return [
+    {
+      id: `${req.stepId}-reason`,
+      stepId: req.stepId,
+      stepTitle: req.modelName || req.stepLabel,
+      question: req.reason,
+      acceptedInputs: req.acceptedInputs,
+    },
+  ];
 }
 
 export function Prompt({
@@ -25,12 +55,14 @@ export function Prompt({
   const [draftPrompt, setDraftPrompt] = useState(initialPrompt);
   const [draftAttachments, setDraftAttachments] =
     useState<WorkflowAttachment[]>(initialAttachments);
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setDraftPrompt(initialPrompt);
       setDraftAttachments(initialAttachments);
+      setSelectedOptions({});
       setError(null);
     }
   }, [open, initialPrompt, initialAttachments, missing]);
@@ -41,13 +73,42 @@ export function Prompt({
       for (const mod of item.acceptedInputs) {
         if (mod) set.add(mod);
       }
+      for (const sub of item.items ?? []) {
+        for (const mod of sub.acceptedInputs ?? []) {
+          if (mod) set.add(mod);
+        }
+      }
     }
     return set.size > 0 ? Array.from(set) : undefined;
   }, [missing]);
 
+  const canSkipWithDefaults = useMemo(
+    () =>
+      missing.length > 0 &&
+      missing.every(
+        (m) =>
+          m.canSkipWithDefaults !== false &&
+          !(m.acceptedInputs.some((mod) => mod !== 'text') && !m.acceptedInputs.includes('text')),
+      ),
+    [missing],
+  );
+
+  const composeEffectivePrompt = (basePrompt: string): string => {
+    const pickedLines: string[] = [];
+    for (const req of missing) {
+      for (const item of normalizePromptItems(req)) {
+        const chosen = selectedOptions[item.id];
+        if (chosen) {
+          pickedLines.push(`${item.question} ${chosen}`);
+        }
+      }
+    }
+    return [basePrompt.trim(), ...pickedLines].filter(Boolean).join('\n');
+  };
+
   const handleContinue = (overrideAttachments?: WorkflowAttachment[]) => {
     const nextAttachments = overrideAttachments ?? draftAttachments;
-    const trimmedPrompt = draftPrompt.trim();
+    const mergedPrompt = composeEffectivePrompt(draftPrompt);
 
     for (const item of missing) {
       const nonText = item.acceptedInputs.filter((mod) => mod !== 'text');
@@ -63,22 +124,22 @@ export function Prompt({
           return;
         }
       } else if (
-        (item.questions && item.questions.length > 0) &&
-        !trimmedPrompt &&
+        ((item.questions && item.questions.length > 0) || (item.items && item.items.length > 0)) &&
+        !mergedPrompt &&
         nextAttachments.length === 0
       ) {
-        setError('Enter a response or attach a file to continue.');
+        setError('Select an option, enter a response, or attach a file to continue.');
         return;
       }
     }
 
-    if (!trimmedPrompt && nextAttachments.length === 0) {
+    if (!mergedPrompt && nextAttachments.length === 0) {
       setError('Provide the requested input to continue.');
       return;
     }
 
     setError(null);
-    onSubmit({ prompt: draftPrompt, attachments: nextAttachments });
+    onSubmit({ prompt: mergedPrompt, attachments: nextAttachments });
   };
 
   return (
@@ -87,61 +148,79 @@ export function Prompt({
       onClose={() => {
         if (!busy) onClose();
       }}
-      title="Provide Required Input"
+      title="Coordinator Clarification"
       size="md"
     >
       <div className="modal-form">
         <p className="credentials-intro">
-          Provide the required input below to continue running this workflow.
+          {missing[0]?.context ||
+            'Answer or pick quick options below so the Coordinator can tailor this workflow run.'}
         </p>
 
         <div className="credentials-list">
-          {missing.map((item) => (
-            <div key={`${item.stepId}-${item.modelId ?? 'clarify'}`} className="credential-card">
-              <div className="credential-card-head">
-                <div className="credential-card-title-row">
-                  <span className="credential-card-name">
-                    {item.modelName || item.stepLabel}
-                  </span>
-                  {item.acceptedInputs.length > 0 ? (
-                    item.acceptedInputs.map((mod) => (
-                      <span key={mod} className="status-pill">
-                        {mod.toUpperCase()}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="status-pill">CLARIFY</span>
-                  )}
-                </div>
-                <p className="credential-card-reason">{item.reason}</p>
-                {(() => {
-                  const distinctQuestions = (item.questions ?? []).filter(
-                    (question) => question.trim() && question.trim() !== item.reason.trim(),
-                  );
-                  return distinctQuestions.length > 0 ? (
-                    <div className="credential-vars-box">
-                      {distinctQuestions.map((question) => (
-                        <p key={question} className="credential-card-reason">
-                          {question}
-                        </p>
-                      ))}
+          {missing.flatMap((req) =>
+            normalizePromptItems(req).map((item) => (
+              <div key={item.id} className="credential-card">
+                <div className="credential-card-head">
+                  <div className="credential-card-title-row">
+                    <span className="credential-card-name">
+                      {item.stepTitle || req.modelName || req.stepLabel || 'Coordinator'}
+                    </span>
+                    {(item.acceptedInputs ?? req.acceptedInputs).length > 0 ? (
+                      (item.acceptedInputs ?? req.acceptedInputs).map((mod) => (
+                        <span key={mod} className="status-pill">
+                          {mod.toUpperCase()}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="status-pill">CLARIFY</span>
+                    )}
+                  </div>
+                  <p className="credential-card-reason">{item.question}</p>
+                  {item.defaultHint ? (
+                    <span className="wf-default-hint">Default: {item.defaultHint}</span>
+                  ) : null}
+                  {item.options && item.options.length > 0 ? (
+                    <div className="wf-options-row" role="group" aria-label={item.question}>
+                      {item.options.map((opt) => {
+                        const active = selectedOptions[item.id] === opt;
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            className={`chip-btn ${active ? 'is-active' : ''}`}
+                            aria-pressed={active}
+                            disabled={busy}
+                            onClick={() =>
+                              setSelectedOptions((prev) => {
+                                const next = { ...prev };
+                                if (next[item.id] === opt) delete next[item.id];
+                                else next[item.id] = opt;
+                                return next;
+                              })
+                            }
+                          >
+                            <span>{opt}</span>
+                          </button>
+                        );
+                      })}
                     </div>
-                  ) : null;
-                })()}
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ))}
+            )),
+          )}
         </div>
 
         <RunComposer
           compact
-          label="Input"
+          label="Response"
           value={draftPrompt}
           onChange={setDraftPrompt}
           attachments={draftAttachments}
           onAttachmentsChange={setDraftAttachments}
           acceptedInputs={acceptedInputs}
-          placeholder="Answer, attach a file, or record audio..."
+          placeholder="Add details, attach a file, or record audio..."
           busy={busy}
           submitLabel="Continue"
           busyLabel="Running..."
@@ -150,6 +229,24 @@ export function Prompt({
         />
 
         <div className="modal-footer">
+          {canSkipWithDefaults ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                onSubmit({
+                  prompt: composeEffectivePrompt(draftPrompt) || 'Proceed with smart defaults.',
+                  attachments: draftAttachments,
+                  skipClarify: true,
+                });
+              }}
+            >
+              <Sparkles size={13} aria-hidden="true" />
+              <span>Use smart defaults & run</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-ghost btn-sm"

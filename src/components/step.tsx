@@ -156,6 +156,10 @@ export const NodeCard = memo(function NodeCard({ id, data, selected }: NodeProps
     typeof data.liveStatus === 'string' && data.liveStatus.trim().length > 0
       ? data.liveStatus.trim()
       : null;
+  const healedLabel =
+    typeof data.healedLabel === 'string' && data.healedLabel.trim().length > 0
+      ? data.healedLabel.trim()
+      : null;
   const connectorAuthState =
     data.connectorAuthState === 'connected' || data.connectorAuthState === 'needs_auth'
       ? data.connectorAuthState
@@ -314,6 +318,11 @@ export const NodeCard = memo(function NodeCard({ id, data, selected }: NodeProps
           <div className="node-sub is-live">{liveStatus}</div>
         ) : subtitle ? (
           <div className="node-sub">{subtitle}</div>
+        ) : null}
+        {healedLabel ? (
+          <div className="wf-heal-badge is-node" title={healedLabel}>
+            <span>{healedLabel}</span>
+          </div>
         ) : null}
         {showConnectBtn ? (
           <button

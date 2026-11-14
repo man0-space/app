@@ -125,11 +125,12 @@
    POST-MODERN FLOATING PROMPT-BOX (.wf-floating-dock / .wf-prompt-card)
    ========================================================================== */
 .wf-floating-dock {
+  container: prompt-dock / inline-size;
   position: absolute;
-  bottom: clamp(12px, 2.2dvh, 22px);
+  bottom: max(12px, calc(env(safe-area-inset-bottom, 0px) + 10px));
   left: 50%;
   transform: translateX(-50%);
-  width: min(calc(100% - 24px), 43rem);
+  width: min(calc(100% - 24px), 44rem);
   z-index: 32;
   pointer-events: none;
 }
@@ -297,6 +298,242 @@
   color: var(--accent-gold);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* ==========================================================================
+   COMPACT CLARIFICATION POPOVER & INLINE LIVE STATUS (.wf-clarify-popover)
+   ========================================================================== */
+.wf-prompt-live-chip {
+  max-inline-size: clamp(9.5rem, 34cqi, 16rem);
+  min-inline-size: 0;
+}
+
+.wf-prompt-live-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-clarify-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 11px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(245, 158, 11, 0.46);
+  background: rgba(12, 10, 6, 0.92);
+  box-shadow:
+    0 20px 44px -10px rgba(0, 0, 0, 0.94),
+    0 0 24px rgba(245, 158, 11, 0.14);
+  max-block-size: min(32dvh, 14rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.wf-fold-badge.is-healed {
+  color: #bae6fd;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.42);
+}
+
+.wf-heal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-inline-size: 10.5rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.12);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #bae6fd;
+  flex-shrink: 0;
+}
+
+.wf-heal-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-heal-badge.is-node {
+  margin-top: 4px;
+  max-inline-size: 100%;
+  align-self: flex-start;
+}
+
+.wf-coordinator-clarify {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wf-coordinator-context {
+  margin: 0;
+  font-size: var(--font-2xs);
+  line-height: 1.42;
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+
+.wf-coordinator-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wf-coordinator-q-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: rgba(255, 255, 255, 0.025);
+  min-inline-size: 0;
+}
+
+.wf-coordinator-q-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.wf-coordinator-q-step {
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #bae6fd;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-coordinator-default-hint {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.wf-coordinator-q-text {
+  margin: 0;
+  font-size: clamp(0.78rem, 1.3vw, 0.86rem);
+  font-weight: 500;
+  line-height: 1.42;
+  color: var(--text-primary);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+
+@supports (font-size: 1cqi) {
+  .wf-coordinator-q-text {
+    font-size: clamp(0.78rem, 1.9cqi, 0.86rem);
+  }
+}
+
+.wf-coordinator-options-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 1px;
+}
+
+.wf-coordinator-opt-chip {
+  min-block-size: 26px;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.wf-coordinator-clarify-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.wf-coordinator-skip-btn {
+  justify-content: center;
+  border-color: rgba(245, 158, 11, 0.38);
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.wf-coordinator-skip-btn:hover:not(:disabled) {
+  border-color: rgba(245, 158, 11, 0.65);
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--text-primary);
+}
+
+.wf-coordinator-apply-btn {
+  justify-content: center;
+}
+
+/* Desktop / wide-dock layout fallback + neighbor-aware @container upgrade */
+@media (min-width: 640px) {
+  .wf-clarify-popover {
+    max-block-size: min(38dvh, 16rem);
+  }
+
+  .wf-coordinator-clarify-actions {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+}
+
+@supports (container-type: inline-size) {
+  @media (min-width: 640px) {
+    .wf-coordinator-clarify-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+
+  @container prompt-dock (min-width: 31rem) {
+    .wf-clarify-popover {
+      max-block-size: min(38dvh, 16rem);
+    }
+
+    .wf-coordinator-clarify-actions {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+  }
+}
+
+@media (pointer: coarse) {
+  .wf-coordinator-summary {
+    min-block-size: 40px;
+  }
+
+  .wf-coordinator-opt-chip,
+  .wf-coordinator-skip-btn,
+  .wf-coordinator-apply-btn,
+  .wf-coordinator-stream-btn {
+    min-block-size: 38px;
+    padding-inline: 11px;
+  }
 }
 
 /* ==========================================================================
@@ -1693,13 +1930,22 @@
 
 @media (max-width: 768px) {
   .wf-floating-dock {
-    bottom: 8px;
+    bottom: max(8px, calc(env(safe-area-inset-bottom, 0px) + 6px));
     width: calc(100% - 16px);
   }
 
   .wf-prompt-card {
     padding: 8px 9px;
     gap: 6px;
+  }
+
+  .wf-clarify-popover {
+    padding: 8px 9px;
+    max-block-size: min(30dvh, 12.5rem);
+  }
+
+  .wf-prompt-live-chip {
+    max-inline-size: 9.25rem;
   }
 
   .wf-hud-left {

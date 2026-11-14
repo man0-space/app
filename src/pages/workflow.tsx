@@ -1,4 +1,6 @@
 import {
+  applyNodeChanges,
+  type NodeChange,
   ReactFlow,
   type ReactFlowInstance,
   ReactFlowProvider,
@@ -19,6 +21,7 @@ import {
   Minus,
   PanelRight,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
   Wallet,
@@ -48,12 +51,14 @@ import { formatMicroUsdc, useSession } from '../hooks/use-session';
 import {
   api,
   authenticated,
+  type Clarification,
   type ConnectorDecisionItem,
   type Execution,
   Fault,
   type MissingConnectorRequirement,
   type MissingInputRequirement,
   type RunStreamEvent,
+  type StepReplacement,
   type WorkflowAttachment,
   type WorkflowBillItem,
 } from '../lib/api';
@@ -119,6 +124,76 @@ function isRecoverableStreamError(err: unknown): boolean {
     err.status === 503 ||
     err.status === 504
   );
+}
+
+function shortResourceName(raw: string): string {
+  const trimmed = raw.trim().replace(/^(model|connector|agent):/i, '');
+  if (!trimmed) return raw;
+  if (/^0x[a-f0-9]{12,}$/i.test(trimmed)) {
+    return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+  }
+  const slashTail = trimmed.includes('/') ? trimmed.split('/').pop()! : trimmed;
+  const colonTail = slashTail.includes(':') ? slashTail.split(':').pop()! : slashTail;
+  return colonTail || trimmed;
+}
+
+function formatStepReplacementLabel(list?: readonly StepReplacement[]): string | null {
+  if (!list || list.length === 0) return null;
+  const latest = list[list.length - 1]!;
+  const fromName = shortResourceName(latest.from);
+  const toName = latest.replacementName?.trim() || shortResourceName(latest.to);
+  return `Self-healed: ${fromName} → ${toName}`;
+}
+
+function flattenClarifications(missing: readonly MissingInputRequirement[]): Clarification[] {
+  const items: Clarification[] = [];
+  const seen = new Set<string>();
+  for (const req of missing) {
+    if (req.items && req.items.length > 0) {
+      for (const item of req.items) {
+        const key = `${item.id}::${item.question.trim().toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          ...item,
+          stepId: item.stepId ?? req.stepId,
+          stepTitle: item.stepTitle || req.modelName || req.stepLabel,
+          acceptedInputs: item.acceptedInputs ?? req.acceptedInputs,
+        });
+      }
+      continue;
+    }
+    const questions = (req.questions ?? []).filter((q) => q.trim().length > 0);
+    if (questions.length > 0) {
+      questions.forEach((question, idx) => {
+        const key = `q::${question.trim().toLowerCase()}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        items.push({
+          id: `${req.stepId}-q-${idx}`,
+          stepId: req.stepId,
+          stepTitle: req.modelName || req.stepLabel,
+          question,
+          acceptedInputs: req.acceptedInputs,
+        });
+      });
+      continue;
+    }
+    if (req.reason.trim()) {
+      const key = `r::${req.reason.trim().toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        items.push({
+          id: `${req.stepId}-reason`,
+          stepId: req.stepId,
+          stepTitle: req.modelName || req.stepLabel,
+          question: req.reason,
+          acceptedInputs: req.acceptedInputs,
+        });
+      }
+    }
+  }
+  return items;
 }
 
 interface ThreadSelectorProps {
@@ -328,7 +403,7 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
   }));
   const [canvasReserves, setCanvasReserves] = useState<{ top: number; bottom: number }>(() => ({
     top: 72,
-    bottom: isCompactCanvasViewport() ? 228 : 254,
+    bottom: isCompactCanvasViewport() ? 168 : 184,
   }));
 
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -369,6 +444,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
   const [credentialsModalOpen, setCredentialsModalOpen] = useState(false);
   const [missingInputs, setMissingInputs] = useState<MissingInputRequirement[]>([]);
   const [inputPromptOpen, setInputPromptOpen] = useState(false);
+  const [stepReplacements, setStepReplacements] = useState<Record<string, StepReplacement[]>>({});
+  const [selectedClarifyAnswers, setSelectedClarifyAnswers] = useState<Record<string, string>>({});
+  const [clarifyPopoverOpen, setClarifyPopoverOpen] = useState(false);
   const [catalogModels, setCatalogModels] = useState<Entry[]>([]);
   const [activeTab, setActiveTab] = useState<'final' | string>('final');
   const [copied, setCopied] = useState(false);
@@ -420,10 +498,10 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
           : 72;
       const nextBottom =
         dockRect && dockRect.height > 0
-          ? Math.max(120, Math.ceil(planeRect.bottom - dockRect.top) + 22)
+          ? Math.max(112, Math.ceil(planeRect.bottom - dockRect.top) + 18)
           : isCompactCanvasViewport(planeRect.width)
-            ? 228
-            : 254;
+            ? 168
+            : 184;
       setCanvasReserves((prev) =>
         Math.abs(prev.top - nextTop) < 6 && Math.abs(prev.bottom - nextBottom) < 6
           ? prev
@@ -436,7 +514,14 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     if (hudRef.current) ro.observe(hudRef.current);
     if (dockRef.current) ro.observe(dockRef.current);
     return () => ro.disconnect();
-  }, [loading, sidePanelOpen, workflow?.id, running, Boolean(runError), attachments.length]);
+  }, [
+    loading,
+    sidePanelOpen,
+    workflow?.id,
+    running,
+    Boolean(runError),
+    attachments.length,
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -477,6 +562,11 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
         setLiveStepStreams((prev) => ({ ...prev, [evt.stepId]: '' }));
       } else if (evt.type === 'step:done') {
         setLiveStepOutputs((prev) => ({ ...prev, [evt.stepId]: evt.output }));
+      } else if (evt.type === 'step:replaced') {
+        setStepReplacements((prev) => ({
+          ...prev,
+          [evt.stepId]: evt.replacements,
+        }));
       } else if (evt.type === 'sse:activity') {
         setLiveActivities((prev) => [...prev.slice(-49), evt]);
       } else if (evt.type === 'sse:delta') {
@@ -500,11 +590,13 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
         setCredentialsModalOpen(true);
       } else if (evt.type === 'input:pause') {
         setMissingInputs(evt.missingInputs);
+        setSelectedClarifyAnswers({});
         if (evt.missingInputs[0]?.threadId) {
           setPausedThreadId(evt.missingInputs[0].threadId);
           setActiveThreadId(evt.missingInputs[0].threadId);
         }
-        setInputPromptOpen(true);
+        setClarifyPopoverOpen(true);
+        setInputPromptOpen(false);
       }
     },
     [refreshThreads, workflowId],
@@ -528,12 +620,14 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       ) {
         const tid = err.threadId ?? err.missingInputs[0]?.threadId ?? fallbackThreadId ?? null;
         setMissingInputs(err.missingInputs);
+        setSelectedClarifyAnswers({});
         if (tid) {
           setPausedThreadId(tid);
           setActiveThreadId(tid);
         }
-        setInputPromptOpen(true);
-        setRunError(err.message);
+        setClarifyPopoverOpen(true);
+        setInputPromptOpen(false);
+        setRunError(null);
       } else {
         setRunError(err instanceof Error ? err.message : 'Workflow run failed.');
       }
@@ -601,9 +695,20 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       setOutputDialogOpen(false);
 
       const nextExecution = (thread.execution as Execution | null | undefined) ?? null;
+      const nextBilling =
+        (thread.billing as { composeBillWei?: string; bills?: WorkflowBillItem[] } | null | undefined) ??
+        null;
       setExecution(nextExecution);
-      setLiveBills(nextExecution?.bills ?? []);
-      setLiveComposeBillWei(nextExecution?.composeBillWei ?? '0');
+      setLiveBills(nextExecution?.bills ?? nextBilling?.bills ?? []);
+      setLiveComposeBillWei(nextExecution?.composeBillWei ?? nextBilling?.composeBillWei ?? '0');
+      const hydratedReplacements: Record<string, StepReplacement[]> = {};
+      for (const step of nextExecution?.steps ?? []) {
+        if (step.replacements && step.replacements.length > 0) {
+          hydratedReplacements[step.id] = step.replacements;
+        }
+      }
+      setStepReplacements(hydratedReplacements);
+      setSelectedClarifyAnswers({});
 
       const nextMissingInputs =
         (thread.missingInputs as unknown as MissingInputRequirement[]) ?? [];
@@ -617,12 +722,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
         setMissingInputs(nextMissingInputs);
         setMissingConnectors([]);
         setCredentialsModalOpen(false);
-        setInputPromptOpen(options?.autoOpenModals !== false && nextMissingInputs.length > 0);
-        setRunError(
-          thread.error ||
-          nextMissingInputs[0]?.reason ||
-          'Additional input is required to continue this workflow.',
-        );
+        setClarifyPopoverOpen(nextMissingInputs.length > 0);
+        setInputPromptOpen(false);
+        setRunError(null);
       } else if (thread.status === 'connector_required') {
         setRunning(false);
         setRunningStepId(null);
@@ -687,6 +789,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     setRunError(null);
     setMissingInputs([]);
     setMissingConnectors([]);
+    setStepReplacements({});
+    setSelectedClarifyAnswers({});
+    setClarifyPopoverOpen(false);
     setInputPromptOpen(false);
     setCredentialsModalOpen(false);
     setOutputDialogOpen(false);
@@ -718,6 +823,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     setRunError(null);
     setMissingInputs([]);
     setMissingConnectors([]);
+    setStepReplacements({});
+    setSelectedClarifyAnswers({});
+    setClarifyPopoverOpen(false);
     setInputPromptOpen(false);
     setCredentialsModalOpen(false);
     setLiveStepOutputs({});
@@ -756,6 +864,14 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       void loadWorkflow();
     }
   }, [accessDenied, user?.userAddress, loadWorkflow]);
+
+  const prevUserAddressRef = useRef<string | undefined>(user?.userAddress);
+  useEffect(() => {
+    if (prevUserAddressRef.current === user?.userAddress) return;
+    prevUserAddressRef.current = user?.userAddress;
+    hydratedScopeRef.current = null;
+    handleStartNewThread();
+  }, [handleStartNewThread, user?.userAddress]);
 
   useEffect(() => {
     if (!workflow || !user?.userAddress) {
@@ -911,24 +1027,43 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     }
     setGeneratingBanner(true);
     try {
+      const session = await getRunSession();
+      if (!session) {
+        openAuthModal();
+        onNotify('Approve a session limit in Account to generate a banner ($0.03).');
+        return;
+      }
       const logos = buildBannerBrandLogos(workflow.nodes);
-      const generated = await api.generateBanner({
-        title: workflow.name.trim() || 'man0 Workflow',
-        description:
-          workflow.terms?.description?.trim() ||
-          workflow.brief?.trim() ||
-          workflow.nodes.map((n) => n.data.label).join(', ') ||
-          'Autonomous multi-step AI and Web3 workflow.',
-        ...(logos.length > 0 ? { logos } : {}),
-      });
+      const generated = await api.generateBanner(
+        {
+          title: workflow.name.trim() || 'man0 Workflow',
+          description:
+            workflow.terms?.description?.trim() ||
+            workflow.brief?.trim() ||
+            workflow.nodes.map((n) => n.data.label).join(', ') ||
+            'Autonomous multi-step AI and Web3 workflow.',
+          ...(logos.length > 0 ? { logos } : {}),
+        },
+        session,
+      );
       await persistWorkflowBanner(generated.imageUrl);
       onNotify('Generated workflow banner');
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Unable to generate banner');
     } finally {
       setGeneratingBanner(false);
+      void refreshSession();
     }
-  }, [canEditBanner, openAuthModal, onNotify, persistWorkflowBanner, user, workflow]);
+  }, [
+    canEditBanner,
+    getRunSession,
+    openAuthModal,
+    onNotify,
+    persistWorkflowBanner,
+    refreshSession,
+    user,
+    workflow,
+  ]);
 
   const handleWorkflowBannerRemove = useCallback(async () => {
     if (!canEditBanner) return;
@@ -955,12 +1090,26 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     navigateTo('/market');
   };
 
+  const clarifyItems = useMemo(() => flattenClarifications(missingInputs), [missingInputs]);
+
+  const canSkipClarify = useMemo(
+    () =>
+      missingInputs.length > 0 &&
+      missingInputs.every(
+        (m) =>
+          m.canSkipWithDefaults !== false &&
+          !(m.acceptedInputs.some((mod) => mod !== 'text') && !m.acceptedInputs.includes('text')),
+      ),
+    [missingInputs],
+  );
+
   const handleRun = async (
     event?: FormEvent,
     overrides?: {
       prompt?: string;
       attachments?: WorkflowAttachment[];
       threadId?: string;
+      skipClarify?: boolean;
       connectorDecisions?: ConnectorDecisionItem[];
     },
   ) => {
@@ -972,7 +1121,17 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       return;
     }
 
-    const effectivePrompt = (overrides?.prompt ?? prompt).trim();
+    const basePrompt = (overrides?.prompt ?? prompt).trim();
+    const pickedLines: string[] = [];
+    if (overrides?.prompt === undefined) {
+      for (const item of clarifyItems) {
+        const chosen = selectedClarifyAnswers[item.id];
+        if (chosen) {
+          pickedLines.push(`${item.question} ${chosen}`);
+        }
+      }
+    }
+    const effectivePrompt = [basePrompt, ...pickedLines].filter(Boolean).join('\n').trim();
     const effectiveAttachments = overrides?.attachments ?? attachments;
     const completedPriorCount = Object.keys(liveStepOutputs).length;
     const hasIncompletePriorSteps =
@@ -996,11 +1155,17 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     setMissingConnectors([]);
     setCredentialsModalOpen(false);
     setMissingInputs([]);
+    setSelectedClarifyAnswers({});
     setInputPromptOpen(false);
+    setClarifyPopoverOpen(false);
     setActiveThreadId(targetThreadId);
+    if (pickedLines.length > 0 && overrides?.prompt === undefined) {
+      setPrompt('');
+    }
 
     if (!resumeThreadId) {
       setPausedThreadId(null);
+      setStepReplacements({});
       setLiveStepOutputs({});
       setLiveStepStreams({});
       setLiveCoordinatorStream('');
@@ -1032,10 +1197,14 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       try {
         res = await api.runWorkflow(
           workflow.id,
-          effectivePrompt || workflow.brief || undefined,
+          effectivePrompt ||
+          (overrides?.skipClarify ? 'Proceed with smart defaults.' : undefined) ||
+          workflow.brief ||
+          undefined,
           session,
           {
             dry: dryRun,
+            ...(overrides?.skipClarify !== undefined ? { skipClarify: overrides.skipClarify } : {}),
             threadId: targetThreadId,
             ...(effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
             ...(activeCoordinator ? { coordinator: activeCoordinator } : {}),
@@ -1059,8 +1228,18 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
       }
       if (controller.signal.aborted) return;
 
+      const settledReplacements: Record<string, StepReplacement[]> = {};
+      for (const s of res.steps ?? []) {
+        if (s.replacements && s.replacements.length > 0) {
+          settledReplacements[s.id] = s.replacements;
+        }
+      }
+      if (Object.keys(settledReplacements).length > 0) {
+        setStepReplacements((prev) => ({ ...prev, ...settledReplacements }));
+      }
       setExecution(res);
       setPausedThreadId(null);
+      setClarifyPopoverOpen(false);
       setActiveTab('final');
       setOutputDialogOpen(true);
       onNotify(res.dry ? 'Dry run complete' : 'Run complete');
@@ -1244,6 +1423,8 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     if (!adaptiveCanvas) return [];
     return adaptiveCanvas.nodes.map((node, idx) => {
       const execStatus = stepStatusByNodeId.get(node.id) ?? 'idle';
+      const replacements =
+        stepReplacements[node.id] ?? execution?.steps.find((s) => s.id === node.id)?.replacements;
       return {
         ...node,
         selected: selectedNodeId === node.id,
@@ -1255,6 +1436,7 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
           running: execStatus === 'executing',
           priceLabel: stepPriceByNodeId.get(node.id),
           liveStatus: stepLiveStatusByNodeId.get(node.id),
+          healedLabel: formatStepReplacementLabel(replacements),
           connectorAuthState: connectorAuthByNodeId[node.id],
           onConnectClick: handleNodeConnectClick,
           activeHandles: activeHandlesByNode.get(node.id),
@@ -1265,12 +1447,50 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     activeHandlesByNode,
     adaptiveCanvas,
     connectorAuthByNodeId,
+    execution?.steps,
     handleNodeConnectClick,
     selectedNodeId,
     stepLiveStatusByNodeId,
     stepPriceByNodeId,
+    stepReplacements,
     stepStatusByNodeId,
   ]);
+
+  const [canvasNodes, setCanvasNodes] = useState<Block[]>([]);
+
+  useEffect(() => {
+    setCanvasNodes((prev) => {
+      if (nodesForCanvas.length === 0) return prev.length === 0 ? prev : [];
+      const prevById = new Map(prev.map((n) => [n.id, n]));
+      return nodesForCanvas.map((next) => {
+        const existing = prevById.get(next.id);
+        if (!existing) return next;
+        return {
+          ...next,
+          ...(existing.measured ? { measured: existing.measured } : {}),
+          ...(existing.width !== undefined ? { width: existing.width } : {}),
+          ...(existing.height !== undefined ? { height: existing.height } : {}),
+        };
+      });
+    });
+  }, [nodesForCanvas]);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Block>[]) => {
+      setCanvasNodes((prev) => {
+        const hadMeasured = prev.length > 0 && prev.every((n) => Boolean(n.measured?.width));
+        const next = applyNodeChanges(changes, prev);
+        const nowMeasured = next.length > 0 && next.every((n) => Boolean(n.measured?.width));
+        if (!hadMeasured && nowMeasured) {
+          window.requestAnimationFrame(() => {
+            fitWorkflowCanvas(0);
+          });
+        }
+        return next;
+      });
+    },
+    [fitWorkflowCanvas],
+  );
 
   const edgesWithState = useMemo<Link[]>(() => {
     if (!workflow || !adaptiveCanvas) return [];
@@ -1306,6 +1526,22 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
     const nonText = entryInputs.filter((m) => m !== 'text');
     return nonText.length > 0 ? entryInputs : undefined;
   }, [workflow]);
+
+  const composerAcceptedInputs = useMemo(() => {
+    if (missingInputs.length === 0) return rootAcceptedInputs;
+    const merged = new Set<string>(rootAcceptedInputs ?? []);
+    for (const req of missingInputs) {
+      for (const mod of req.acceptedInputs) {
+        if (mod) merged.add(mod);
+      }
+      for (const sub of req.items ?? []) {
+        for (const mod of sub.acceptedInputs ?? []) {
+          if (mod) merged.add(mod);
+        }
+      }
+    }
+    return merged.size > 0 ? Array.from(merged) : undefined;
+  }, [missingInputs, rootAcceptedInputs]);
 
   if (loading) {
     return (
@@ -1366,6 +1602,8 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
   const tasks = workflow.terms?.tasks ?? workflow.tasks ?? [];
   const creatorFeePercent = workflow.published ? (workflow.terms?.creatorFee ?? 0) : 0;
   const platformFeePercent = workflow.published ? (config?.fees?.platformPercent ?? 2) : 0;
+  const effectiveCreatorFeePercent = isOwner ? 0 : creatorFeePercent;
+  const effectivePlatformFeePercent = isOwner ? 0 : platformFeePercent;
   const mintTxUrl = workflow.terms?.txHash
     ? explorerTxUrl(workflow.terms.txHash, workflow.terms.contractId)
     : null;
@@ -1380,6 +1618,8 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
   const completedStepCount = workflow.nodes.filter(
     (n) => stepStatusByNodeId.get(n.id) === 'done',
   ).length;
+  const isClarifying = Boolean(pausedThreadId && missingInputs.length > 0);
+  const selectedClarifyCount = Object.keys(selectedClarifyAnswers).length;
   const canContinueThread = Boolean(
     pausedThreadId ||
     (!execution &&
@@ -1417,13 +1657,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
           : (liveStepOutput ?? '');
 
   const latestActivity = liveActivities.at(-1) ?? null;
-  const activeStreamSnippet = (
-    (runningStepId ? liveStepStreams[runningStepId] : '') || liveCoordinatorStream
-  )
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(-140);
   const billsToShow = execution?.bills?.length ? execution.bills : liveBills;
+  const hasLiveComputeBill =
+    billsToShow.length > 0 || BigInt(liveComposeBillWei || '0') > 0n;
 
   const openStepInspector = (nodeId: string) => {
     setSelectedNodeId(nodeId);
@@ -1482,10 +1718,13 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                 <button
                   type="button"
                   className="wf-hud-live-pill is-paused"
-                  onClick={() => setInputPromptOpen(true)}
+                  onClick={() => {
+                    setClarifyPopoverOpen(true);
+                    dockRef.current?.querySelector('textarea')?.focus();
+                  }}
                 >
                   <AlertTriangle size={12} aria-hidden="true" />
-                  <span>Needs Input</span>
+                  <span>Clarify</span>
                 </button>
               ) : execution ? (
                 <button
@@ -1594,8 +1833,9 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
           </header>
 
           <ReactFlow<Block, Link>
-            nodes={nodesForCanvas}
+            nodes={canvasNodes}
             edges={edgesWithState}
+            onNodesChange={onNodesChange}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onInit={(instance) => {
@@ -1614,8 +1854,119 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
             proOptions={{ hideAttribution: true }}
           />
 
-          <div ref={dockRef} className="wf-floating-dock">
+          <div className="wf-floating-dock">
+            {isClarifying && clarifyPopoverOpen ? (
+              <div
+                className="wf-clarify-popover stealth-glass"
+                role="region"
+                aria-label="Coordinator questions"
+              >
+                {missingInputs[0]?.context ? (
+                  <p className="wf-coordinator-context">{missingInputs[0].context}</p>
+                ) : null}
+
+                <div className="wf-coordinator-questions">
+                  {clarifyItems.map((item) => {
+                    const nonTextMods = (item.acceptedInputs ?? []).filter((m) => m !== 'text');
+                    return (
+                      <div key={item.id} className="wf-coordinator-q-card">
+                        <div className="wf-coordinator-q-head">
+                          {item.stepTitle ? (
+                            <span className="wf-coordinator-q-step">{item.stepTitle}</span>
+                          ) : null}
+                          {nonTextMods.map((mod) => (
+                            <span key={mod} className="status-pill">
+                              {mod.toUpperCase()}
+                            </span>
+                          ))}
+                          {item.defaultHint ? (
+                            <span className="wf-coordinator-default-hint">
+                              Default: {item.defaultHint}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="wf-coordinator-q-text">{item.question}</p>
+                        {item.options && item.options.length > 0 ? (
+                          <div
+                            className="wf-coordinator-options-row"
+                            role="group"
+                            aria-label={item.question}
+                          >
+                            {item.options.map((opt) => {
+                              const active = selectedClarifyAnswers[item.id] === opt;
+                              return (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  className={`chip-btn wf-coordinator-opt-chip ${active ? 'is-active' : ''}`}
+                                  aria-pressed={active}
+                                  disabled={running}
+                                  onClick={() =>
+                                    setSelectedClarifyAnswers((prev) => {
+                                      const next = { ...prev };
+                                      if (next[item.id] === opt) delete next[item.id];
+                                      else next[item.id] = opt;
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  <span>{opt}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {canSkipClarify || selectedClarifyCount > 0 ? (
+                  <div className="wf-coordinator-clarify-actions">
+                    {canSkipClarify ? (
+                      <button
+                        type="button"
+                        className="chip-btn wf-coordinator-skip-btn"
+                        disabled={running}
+                        onClick={() => {
+                          const resumeId =
+                            pausedThreadId ?? missingInputs[0]?.threadId ?? undefined;
+                          void handleRun(undefined, {
+                            skipClarify: true,
+                            ...(resumeId ? { threadId: resumeId } : {}),
+                          });
+                        }}
+                      >
+                        <Sparkles size={11} aria-hidden="true" />
+                        <span>Use smart defaults & run</span>
+                      </button>
+                    ) : null}
+                    {selectedClarifyCount > 0 ? (
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-xs wf-coordinator-apply-btn"
+                        disabled={running}
+                        onClick={() => {
+                          const resumeId =
+                            pausedThreadId ?? missingInputs[0]?.threadId ?? undefined;
+                          void handleRun(undefined, {
+                            ...(resumeId ? { threadId: resumeId } : {}),
+                          });
+                        }}
+                      >
+                        <span>
+                          Apply {selectedClarifyCount}{' '}
+                          {selectedClarifyCount === 1 ? 'choice' : 'choices'} & run
+                        </span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div
+              ref={dockRef}
               className={`wf-prompt-card stealth-glass ${running ? 'is-running' : ''} ${pausedThreadId ? 'is-paused' : ''}`.trim()}
             >
               <div className="wf-prompt-bar">
@@ -1626,13 +1977,29 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                   entries={catalogModels}
                   disabled={running}
                   onNotify={onNotify}
-                  onChange={(nextCoord) => {
-                    setRunnerCoordinator(nextCoord);
+                  onChange={(nextCoordinator) => {
+                    setRunnerCoordinator(nextCoordinator);
                     setPausedThreadId(null);
                   }}
                 />
 
                 <div className="wf-prompt-toggles">
+                  {running ? (
+                    <button
+                      type="button"
+                      className="wf-meta-chip is-active wf-prompt-live-chip"
+                      onClick={() => setOutputDialogOpen(true)}
+                    >
+                      <LoaderCircle size={10} className="spin" aria-hidden="true" />
+                      <span className="wf-prompt-live-label">
+                        {activeStepIndex}/{workflow.nodes.length} ·{' '}
+                        {activeStepNode?.data.entry?.name ||
+                          activeStepNode?.data.label ||
+                          'Executing'}
+                      </span>
+                    </button>
+                  ) : null}
+
                   <Tooltip
                     label="Dry run"
                     description="Simulates paid actions without external side effects"
@@ -1662,53 +2029,39 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                     </button>
                   ) : null}
 
-                  {missingInputs.length > 0 && !inputPromptOpen ? (
+                  {isClarifying ? (
                     <button
                       type="button"
-                      className="wf-meta-chip is-warn"
-                      onClick={() => setInputPromptOpen(true)}
+                      className={`wf-meta-chip is-warn ${clarifyPopoverOpen ? 'is-active' : ''}`}
+                      aria-expanded={clarifyPopoverOpen}
+                      onClick={() => setClarifyPopoverOpen((v) => !v)}
                     >
-                      <span>Add input</span>
+                      <MessageSquare size={11} aria-hidden="true" />
+                      <span>Clarify ({clarifyItems.length})</span>
                     </button>
                   ) : null}
                 </div>
               </div>
 
-              {running ? (
-                <button
-                  type="button"
-                  className="wf-live-sse-strip"
-                  onClick={() => setOutputDialogOpen(true)}
-                  aria-label="Open live execution stream"
-                >
-                  <span className="wf-fold-dot" aria-hidden="true" />
-                  <span className="wf-live-sse-title">
-                    {latestActivity?.title ||
-                      `Step ${activeStepIndex}/${workflow.nodes.length} · ${activeStepNode?.data.entry?.name || activeStepNode?.data.label || 'Executing'
-                      }`}
-                  </span>
-                  {activeStreamSnippet ? (
-                    <span className="wf-live-sse-snippet" aria-live="off">
-                      {activeStreamSnippet}
-                    </span>
-                  ) : null}
-                  {BigInt(liveComposeBillWei || '0') > 0n ? (
-                    <span className="wf-live-sse-bill">
-                      {formatMicroUsdc(liveComposeBillWei)}
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-
               <RunComposer
                 floating
-                label={canContinueThread ? 'Continue Thread' : 'Workflow Prompt'}
+                label={
+                  isClarifying
+                    ? 'Reply to Coordinator'
+                    : canContinueThread
+                      ? 'Continue Thread'
+                      : 'Workflow Prompt'
+                }
                 value={prompt}
                 onChange={setPrompt}
                 attachments={attachments}
                 onAttachmentsChange={setAttachments}
-                acceptedInputs={rootAcceptedInputs}
-                placeholder={workflow.brief || 'Prompt workflow, attach media, or record voice...'}
+                acceptedInputs={composerAcceptedInputs}
+                placeholder={
+                  isClarifying
+                    ? 'Type your answer, pick quick options above, or attach files...'
+                    : workflow.brief || 'Prompt workflow, attach media, or record voice...'
+                }
                 busy={running}
                 submitDisabled={workflow.nodes.length === 0}
                 submitLabel={canContinueThread ? 'Continue' : dryRun ? 'Dry Run' : 'Run'}
@@ -1820,7 +2173,11 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                   <div className="wf-card-top">
                     {tasks.length > 0 ? <TaskPills tasks={tasks} /> : <span />}
                     <span className="wf-price">
-                      {creatorFeePercent > 0 ? `+${creatorFeePercent}%` : '0%'} royalty
+                      {isOwner
+                        ? '0% (creator)'
+                        : creatorFeePercent > 0
+                          ? `+${creatorFeePercent}% royalty`
+                          : '0% royalty'}
                     </span>
                   </div>
 
@@ -1876,13 +2233,19 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                   <div className="wf-fee-grid">
                     <div className="wf-fee-cell">
                       <span className="wf-fee-label">Creator</span>
-                      <strong className={creatorFeePercent > 0 ? 'accent-gold' : ''}>
-                        {creatorFeePercent > 0 ? `+${creatorFeePercent}%` : '0%'}
+                      <strong className={effectiveCreatorFeePercent > 0 ? 'accent-gold' : ''}>
+                        {isOwner
+                          ? '0% (creator)'
+                          : effectiveCreatorFeePercent > 0
+                            ? `+${effectiveCreatorFeePercent}%`
+                            : '0%'}
                       </strong>
                     </div>
                     <div className="wf-fee-cell">
                       <span className="wf-fee-label">Platform</span>
-                      <strong>{platformFeePercent}%</strong>
+                      <strong>
+                        {isOwner ? '0% (creator)' : `${effectivePlatformFeePercent}%`}
+                      </strong>
                     </div>
                     <div className="wf-fee-cell">
                       <span className="wf-fee-label">Allowance</span>
@@ -1915,6 +2278,10 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                       {workflow.nodes.map((node, idx) => {
                         const status = stepStatusByNodeId.get(node.id) ?? 'idle';
                         const priceLabel = stepPriceByNodeId.get(node.id);
+                        const healedLabel = formatStepReplacementLabel(
+                          stepReplacements[node.id] ??
+                          execution?.steps.find((s) => s.id === node.id)?.replacements,
+                        );
                         return (
                           <li key={node.id}>
                             <button
@@ -1927,6 +2294,12 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                               <span className="overview-step-title">
                                 {node.data.entry?.name || node.data.label}
                               </span>
+                              {healedLabel ? (
+                                <span className="wf-heal-badge" title={healedLabel}>
+                                  <RefreshCw size={9} aria-hidden="true" />
+                                  <span>healed</span>
+                                </span>
+                              ) : null}
                               {priceLabel ? (
                                 <span className="node-price-tag">{priceLabel}</span>
                               ) : null}
@@ -1952,11 +2325,16 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                   </details>
                 </article>
 
-                {execution ? (
-                  <section className="wf-side-receipt" aria-label="Settlement receipt">
+                {execution || hasLiveComputeBill ? (
+                  <section
+                    className="wf-side-receipt"
+                    aria-label={execution ? 'Settlement receipt' : 'Live compute billing'}
+                  >
                     <div className="wf-side-section-head">
-                      <span className="drawer-kicker">SETTLEMENT</span>
-                      {execution.txHash ? (
+                      <span className="drawer-kicker">
+                        {execution ? 'SETTLEMENT' : 'COMPUTE'}
+                      </span>
+                      {execution?.txHash ? (
                         <div className="wf-card-actions">
                           <a
                             href={explorerTxUrl(execution.txHash, execution.network)}
@@ -1968,21 +2346,34 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
                             <ExternalLink size={11} aria-hidden="true" />
                           </a>
                         </div>
+                      ) : running ? (
+                        <span className="wf-fold-badge is-executing">
+                          <span className="wf-fold-dot" aria-hidden="true" />
+                          <span>live</span>
+                        </span>
                       ) : null}
                     </div>
-                    <div className="run-receipt-bar">
-                      <span>
-                        {execution.dry ? 'Dry · ' : ''}Charged{' '}
-                        <strong>{formatMicroUsdc(execution.totalChargedWei)}</strong>
-                      </span>
-                      <div className="run-receipt-breakdown">
-                        <span>Compute {formatMicroUsdc(execution.composeBillWei)}</span>
-                        {BigInt(execution.creatorFeeWei || '0') > 0n ? (
-                          <span>· Creator {formatMicroUsdc(execution.creatorFeeWei)}</span>
-                        ) : null}
-                        <span>· Platform {formatMicroUsdc(execution.platformFeeWei)}</span>
+                    {execution ? (
+                      <div className="run-receipt-bar">
+                        <span>
+                          {execution.dry ? 'Dry · ' : ''}Charged{' '}
+                          <strong>{formatMicroUsdc(execution.totalChargedWei)}</strong>
+                        </span>
+                        <div className="run-receipt-breakdown">
+                          <span>Compute {formatMicroUsdc(execution.composeBillWei)}</span>
+                          {BigInt(execution.creatorFeeWei || '0') > 0n ? (
+                            <span>· Creator {formatMicroUsdc(execution.creatorFeeWei)}</span>
+                          ) : null}
+                          <span>· Platform {formatMicroUsdc(execution.platformFeeWei)}</span>
+                        </div>
                       </div>
-                    </div>
+                    ) : BigInt(liveComposeBillWei || '0') > 0n ? (
+                      <div className="run-receipt-bar">
+                        <span>
+                          Compute <strong>{formatMicroUsdc(liveComposeBillWei)}</strong>
+                        </span>
+                      </div>
+                    ) : null}
                     <ReceiptBillsFold bills={billsToShow} />
                   </section>
                 ) : null}
@@ -2235,7 +2626,7 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
         initialAttachments={attachments}
         busy={running}
         onClose={() => setInputPromptOpen(false)}
-        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments }) => {
+        onSubmit={({ prompt: nextPrompt, attachments: nextAttachments, skipClarify }) => {
           const resumeId = pausedThreadId ?? missingInputs[0]?.threadId ?? undefined;
           setPrompt(nextPrompt);
           setAttachments(nextAttachments);
@@ -2244,6 +2635,7 @@ function WorkflowInner({ workflowId, onOpenDraft, onNotify }: WorkflowPageProps)
           void handleRun(undefined, {
             prompt: nextPrompt,
             attachments: nextAttachments,
+            ...(skipClarify !== undefined ? { skipClarify } : {}),
             ...(resumeId ? { threadId: resumeId } : {}),
           });
         }}
