@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ArrowRight, Loader2, Sparkles, Square } from 'lucide-react';
 
 export interface VibeProps {
@@ -15,6 +16,7 @@ export interface VibeProps {
   streamPreview?: string;
   errorText?: string | null;
   onCancel?: () => void;
+  wipSlot?: ReactNode;
 }
 
 const STARTERS = [
@@ -38,6 +40,7 @@ export function Vibe({
   streamPreview,
   errorText,
   onCancel,
+  wipSlot,
 }: VibeProps) {
   const text = value ?? brief ?? '';
   const handleChange = onChange ?? onChangeBrief;
@@ -49,9 +52,7 @@ export function Vibe({
       <div className="vibe-card stealth-glass">
         <header className="vibe-header">
           <span className="vibe-badge">● VIBE</span>
-          <span className="vibe-meta">
-            {stepCount} {stepCount === 1 ? 'STEP' : 'STEPS'} IN CANVAS
-          </span>
+          <span className="vibe-meta">NEW WORKFLOW</span>
         </header>
 
         <textarea
@@ -66,7 +67,7 @@ export function Vibe({
         {busy || statusText || streamPreview ? (
           <div className="vibe-live-bar" aria-live="polite">
             <div className="vibe-live-status">
-              {busy ? <Loader2 size={13} className="spin" /> : null}
+              {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
               <span>{statusText || (busy ? 'Designing workflow...' : 'Ready')}</span>
             </div>
             {streamPreview ? <p className="vibe-live-preview">{streamPreview}</p> : null}
@@ -95,13 +96,13 @@ export function Vibe({
 
         <footer className="vibe-footer">
           <button type="button" className="btn btn-ghost btn-sm" onClick={handleSwitch}>
-            Canvas
-            <ArrowRight size={13} />
+            <span>{stepCount > 0 ? `Canvas (${stepCount})` : 'Canvas'}</span>
+            <ArrowRight size={13} aria-hidden="true" />
           </button>
           <div className="vibe-footer-actions">
             {busy && onCancel ? (
               <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
-                <Square size={12} />
+                <Square size={12} aria-hidden="true" />
                 <span>Stop</span>
               </button>
             ) : null}
@@ -111,12 +112,17 @@ export function Vibe({
               disabled={busy || !text.trim()}
               onClick={() => handleGenerate?.(text)}
             >
-              {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+              {busy ? (
+                <Loader2 size={13} className="spin" aria-hidden="true" />
+              ) : (
+                <Sparkles size={13} aria-hidden="true" />
+              )}
               <span>{busy ? 'Building...' : 'Create'}</span>
             </button>
           </div>
         </footer>
       </div>
+      {wipSlot}
     </section>
   );
 }
