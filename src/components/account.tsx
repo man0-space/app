@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Send,
   ShieldCheck,
+  Trash2,
   UserRound,
   Wallet,
 } from 'lucide-react';
@@ -26,8 +27,11 @@ import {
 } from '../lib/contracts';
 import {
   canAutoSendOrigin,
+  discoverEvmProviders,
+  type DiscoveredEvmProvider,
   executeIntentRoute,
   extractWalletErrorMessage,
+  friendlyWalletName,
   NO_FUNDED_WALLET_CODE,
   NO_FUNDED_WALLET_MESSAGE,
   resolveIntentRoute,
@@ -200,8 +204,10 @@ export function AccountChip() {
     linkBusy,
     linkError,
     linkWallet,
+    unlinkWallet,
   } = useAuth();
   const {
+    spendingAddress,
     availableUsd,
     approvedUsd,
     totalUsd,
@@ -237,6 +243,22 @@ export function AccountChip() {
   const [copiedDeposit, setCopiedDeposit] = useState<string | null>(null);
   const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
   const [noFundedDialogOpen, setNoFundedDialogOpen] = useState(false);
+  const [evmWallets, setEvmWallets] = useState<DiscoveredEvmProvider[]>([]);
+
+  useEffect(() => {
+    if (!open || !user) return;
+    let cancelled = false;
+    void discoverEvmProviders()
+      .then((list) => {
+        if (cancelled) return;
+        const withRdns = list.filter((w) => w.rdns.trim().length > 0);
+        setEvmWallets(withRdns);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, user]);
 
   const pocketsRef = useRef<HTMLDivElement | null>(null);
   const fundPocketRef = useRef<HTMLDetailsElement | null>(null);
@@ -262,7 +284,53 @@ export function AccountChip() {
           ? '0.25'
           : numericAvailableUsd >= 0.05
             ? (Math.floor(numericAvailableUsd * 100) / 100).toFixed(2)
-            : '0.25';
+            : links.length > 0
+              ? '1'
+              : '0.25';
+
+  const linksSignature = links
+    .map((item) => `${item.network}:${item.address.trim().toLowerCase()}`)
+    .sort()
+    .join('|');
+  const prevUserAddressRef = useRef<string | undefined>(user?.userAddress);
+  const prevLinksSigRef = useRef<string>(linksSignature);
+
+  useEffect(() => {
+    if (prevUserAddressRef.current === user?.userAddress) return;
+    prevUserAddressRef.current = user?.userAddress;
+    limitTouchedRef.current = false;
+    setLimitUsd('5');
+    setLimitNotice(null);
+    setLimitError(null);
+    setMoneyPrompt('');
+    setResolvedRoute(null);
+    setLiveLegs([]);
+    setLegRuntime({});
+    setManualMode(false);
+    setSwapStatus(null);
+    setMoneyError(null);
+    setNoFundedDialogOpen(false);
+  }, [user?.userAddress]);
+
+  useEffect(() => {
+    if (prevLinksSigRef.current === linksSignature) return;
+    prevLinksSigRef.current = linksSignature;
+    const inFlight = Object.values(legRuntime).some(
+      (r) => r.state === 'sending' || r.state === 'sent',
+    );
+    if (transferBusy || inFlight) return;
+    setMoneyError(null);
+    setNoFundedDialogOpen(false);
+    setLiveLegs([]);
+    setLegRuntime({});
+    setSwapStatus(null);
+    if (moneyPrompt.trim()) {
+      void runMoneyPreview(moneyPrompt);
+    } else {
+      setResolvedRoute(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linksSignature]);
 
   useEffect(() => {
     if (limitTouchedRef.current || balanceLoading) return;
@@ -462,20 +530,24 @@ export function AccountChip() {
       setManualMode(mode === 'address');
 
       if (mode === 'wallet') {
-        await executeIntentRoute(committed, (idx, update) => {
-          if (update.state === 'sent') {
-            anyLegSent = true;
-          }
-          setLegRuntime((prev) => ({
-            ...prev,
-            [idx]: {
-              ...(prev[idx] ?? { state: 'idle' }),
-              state: update.state,
-              ...(update.txHash ? { txHash: update.txHash } : {}),
-              ...(update.intentHash ? { intentHash: update.intentHash } : {}),
-            },
-          }));
-        });
+        await executeIntentRoute(
+          committed,
+          (idx, update) => {
+            if (update.state === 'sent') {
+              anyLegSent = true;
+            }
+            setLegRuntime((prev) => ({
+              ...prev,
+              [idx]: {
+                ...(prev[idx] ?? { state: 'idle' }),
+                state: update.state,
+                ...(update.txHash ? { txHash: update.txHash } : {}),
+                ...(update.intentHash ? { intentHash: update.intentHash } : {}),
+              },
+            }));
+          },
+          links,
+        );
         setSwapStatus((prev) =>
           prev?.status === 'SUCCESS' ? prev : { status: 'PROCESSING' },
         );
@@ -729,11 +801,14 @@ export function AccountChip() {
                       <div className="account-links-row">
                         {net.items.map((item) => {
                           const itemCopied = copiedWallet === item.address;
+                          const providerBadge =
+                            item.providerName ||
+                            (item.providerRdns ? friendlyWalletName(item.providerRdns) : 'Attached');
                           return (
                             <div key={item.id} className="account-link-item">
                               <code>{shortHash(item.address, 6, 4)}</code>
                               <div className="account-link-actions">
-                                <span className="status-pill is-ready">Attached</span>
+                                <span className="status-pill is-ready">{providerBadge}</span>
                                 <Tooltip
                                   label={itemCopied ? 'Copied' : `Copy ${net.label} address`}
                                   description={item.address}
@@ -761,6 +836,20 @@ export function AccountChip() {
                                     <ExternalLink size={11} />
                                   </a>
                                 </Tooltip>
+                                <Tooltip
+                                  label={`Unlink ${net.label} wallet`}
+                                  description={item.address}
+                                >
+                                  <button
+                                    type="button"
+                                    className="account-wallet-icon-btn"
+                                    disabled={linkBusy}
+                                    onClick={() => void unlinkWallet(item.id)}
+                                    aria-label={`Unlink ${net.label} wallet ${shortHash(item.address, 6, 4)}`}
+                                  >
+                                    <Trash2 size={11} />
+                                  </button>
+                                </Tooltip>
                               </div>
                             </div>
                           );
@@ -769,15 +858,33 @@ export function AccountChip() {
                     ) : null}
 
                     <div className="account-pocket-actions">
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        tooltip={false}
-                        disabled={linkBusy}
-                        onClick={() => void linkWallet(net.id)}
-                      >
-                        + Attach {net.label}
-                      </Button>
+                      {net.id === 'evm' && evmWallets.length > 1 ? (
+                        evmWallets.map((w) => {
+                          const label = friendlyWalletName(w.rdns, w.name);
+                          return (
+                            <Button
+                              key={w.rdns}
+                              variant="ghost"
+                              size="xs"
+                              tooltip={false}
+                              disabled={linkBusy}
+                              onClick={() => void linkWallet('evm', w.rdns)}
+                            >
+                              + Attach {label}
+                            </Button>
+                          );
+                        })
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          tooltip={false}
+                          disabled={linkBusy}
+                          onClick={() => void linkWallet(net.id)}
+                        >
+                          + Attach {net.label}
+                        </Button>
+                      )}
                     </div>
 
                     {linkError ? (
@@ -810,14 +917,102 @@ export function AccountChip() {
                 <div className="account-pocket-body">
                   <div className="stat-card-grid">
                     <div className="stat-box">
-                      <span className="stat-label">Available</span>
+                      <div className="stat-box-head">
+                        <span className="stat-label">Available</span>
+                        <span className="stat-subwallet-idx">#0</span>
+                      </div>
                       <span className="stat-val">{availableUsd}</span>
+                      {user.userAddress ? (
+                        <div className="stat-wallet-sub">
+                          <span className="stat-wallet-hash" title={user.userAddress}>
+                            {shortHash(user.userAddress, 5, 4)}
+                          </span>
+                          <div className="stat-wallet-actions">
+                            <Tooltip
+                              label={
+                                copiedWallet === user.userAddress
+                                  ? 'Copied'
+                                  : 'Copy Available (#0) address'
+                              }
+                              description={user.userAddress}
+                            >
+                              <button
+                                type="button"
+                                className="account-wallet-icon-btn is-compact"
+                                onClick={() => void handleCopyWallet(user.userAddress)}
+                                aria-label="Copy Available subwallet address"
+                              >
+                                {copiedWallet === user.userAddress ? (
+                                  <Check size={11} aria-hidden="true" />
+                                ) : (
+                                  <Copy size={11} aria-hidden="true" />
+                                )}
+                              </button>
+                            </Tooltip>
+                            <Tooltip label="View on Explorer" description={user.userAddress}>
+                              <a
+                                href={explorerAccountUrl(user.userAddress)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="account-wallet-icon-btn is-compact"
+                                aria-label="View Available subwallet on explorer"
+                              >
+                                <ExternalLink size={11} aria-hidden="true" />
+                              </a>
+                            </Tooltip>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="stat-box">
-                      <span className="stat-label">Approved</span>
+                      <div className="stat-box-head">
+                        <span className="stat-label">Approved</span>
+                        <span className="stat-subwallet-idx">#1</span>
+                      </div>
                       <span className={`stat-val ${hasApprovedLimit ? 'accent-gold' : ''}`}>
                         {approvedUsd}
                       </span>
+                      {spendingAddress ? (
+                        <div className="stat-wallet-sub">
+                          <span className="stat-wallet-hash" title={spendingAddress}>
+                            {shortHash(spendingAddress, 5, 4)}
+                          </span>
+                          <div className="stat-wallet-actions">
+                            <Tooltip
+                              label={
+                                copiedWallet === spendingAddress
+                                  ? 'Copied'
+                                  : 'Copy Approved (#1) session address'
+                              }
+                              description={spendingAddress}
+                            >
+                              <button
+                                type="button"
+                                className="account-wallet-icon-btn is-compact"
+                                onClick={() => void handleCopyWallet(spendingAddress)}
+                                aria-label="Copy Approved session subwallet address"
+                              >
+                                {copiedWallet === spendingAddress ? (
+                                  <Check size={11} aria-hidden="true" />
+                                ) : (
+                                  <Copy size={11} aria-hidden="true" />
+                                )}
+                              </button>
+                            </Tooltip>
+                            <Tooltip label="View on Explorer" description={spendingAddress}>
+                              <a
+                                href={explorerAccountUrl(spendingAddress)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="account-wallet-icon-btn is-compact"
+                                aria-label="View Approved session subwallet on explorer"
+                              >
+                                <ExternalLink size={11} aria-hidden="true" />
+                              </a>
+                            </Tooltip>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -1021,7 +1216,7 @@ export function AccountChip() {
                       className="input"
                       value={moneyPrompt}
                       onChange={(event) => setMoneyPrompt(event.target.value)}
-                      placeholder="Deposit $5, Swap $1 to SOL, or Withdraw $2…"
+                      placeholder="Deposit $5, Swap $1 to ETH, or Withdraw $2…"
                     />
                     <Button
                       type="submit"
